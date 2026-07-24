@@ -1089,6 +1089,9 @@ export class ItemsService {
       status: 'pending',
     });
 
+    item.status = ItemStatus.DISPUTED;
+    await this.itemRepository.save(item);
+
     return this.disputeRepository.save(dispute);
   }
 
@@ -1126,6 +1129,7 @@ export class ItemsService {
         dispute.reporter.id,
         `Your report on "${itemTitle}" has been reviewed by an admin. Status: ${status}.${adminResponse ? ` Response: ${adminResponse}` : ''}`,
         dispute.item ? `/items/${dispute.item.id}` : '',
+        'announcement'
       );
     }
 

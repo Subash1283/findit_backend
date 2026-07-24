@@ -16,6 +16,7 @@ export enum ItemStatus {
   ACTIVE = 'active',
   SOLVED = 'solved',  
   CLAIMED = 'claimed',
+  DISPUTED = 'disputed',
 }
 
 export enum BlurType {

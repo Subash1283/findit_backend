@@ -54,4 +54,15 @@ export class ChatController {
   async uploadFile(@UploadedFile() file: Express.Multer.File) {
     return { imageUrl: `/uploads/chat/${file.filename}` };
   }
+
+  @Delete('conversation/:itemId/:otherUserId')
+  @ApiOperation({ summary: 'Delete conversation', description: 'Permanently delete all messages and the conversation entity.' })
+  @ApiResponse({ status: 200, description: 'Conversation deleted successfully.' })
+  async deleteConversation(
+    @Param('itemId') itemId: number,
+    @Param('otherUserId') otherUserId: number,
+    @Request() req: any
+  ) {
+    return this.chatService.deleteConversation(itemId, req.user.id, otherUserId);
+  }
 }

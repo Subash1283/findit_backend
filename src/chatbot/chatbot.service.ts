@@ -5,10 +5,25 @@ import { ConfigService } from '@nestjs/config';
 
 // Model list mirrors VisionService — newest first, fallback to older ones
 const CHATBOT_MODELS = [
+  // Stable chat models
+   'gemini-3.1-pro-preview',
+  'gemini-3-flash-preview',
   'gemini-2.5-flash-lite',
   'gemini-2.5-flash',
+  'gemini-2.5-pro',
+
+  // Aliases
+  'gemini-flash-latest',
+  'gemini-flash-lite-latest',
+  'gemini-pro-latest',
+
+  // Older models (legacy/deprecated)
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
+  'gemini-2.0-flash-001',
+  'gemini-2.0-flash-lite-001',
+
+  
 ];
 
 @Injectable()
@@ -25,10 +40,9 @@ export class ChatbotService {
     }
   }
 
-  /**
-   * Try generating content using the model list, falling back on failure.
-   * Only 503/429/500/502 are retried; 404/401 immediately move to the next model.
-   */
+  // Try generating content using the model list, falling back on failure.
+   // Only 503/429/500/502 are retried; 404/401 immediately move to the next model.
+   
   private async generateWithFallback(prompt: string): Promise<string> {
     if (!this.genAI) throw new Error('GEMINI_API_KEY is not configured.');
 
@@ -72,7 +86,7 @@ export class ChatbotService {
       const input = (message || '').trim().toLowerCase();
       if (!input) return 'Please type something so I can help you!';
 
-      // ── Detect intent (Lost vs Found) ───────────────────────────────────
+      // ── Detect intent (Lost vs Found) 
       let targetType: 'lost' | 'found' | null = null;
       if (input.includes('lost') || input.includes('missing')) {
         targetType = 'found';
@@ -80,7 +94,7 @@ export class ChatbotService {
         targetType = 'lost';
       }
 
-      // ── Extract keywords ────────────────────────────────────────────────
+      // ── Extract keywords 
       const stopWords = new Set([
         'the', 'and', 'with', 'for', 'was', 'this', 'hey', 'you', 'seen',
         'any', 'my', 'your', 'lost', 'found', 'missing', 'near', 'at', 'in',

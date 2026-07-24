@@ -128,4 +128,24 @@ export class ChatService {
     }
     return Array.from(conversations.values());
   }
+
+  async deleteConversation(itemId: number, userId1: number, userId2: number) {
+    const conversation = await this.getConversation(itemId, userId1, userId2);
+    if (conversation) {
+      await this.conversationRepository.remove(conversation);
+    }
+
+    const messages = await this.messageRepository.find({
+      where: [
+        { itemId, senderId: userId1, receiverId: userId2 },
+        { itemId, senderId: userId2, receiverId: userId1 },
+      ]
+    });
+    
+    if (messages.length > 0) {
+      await this.messageRepository.remove(messages);
+    }
+
+    return { success: true };
+  }
 }
