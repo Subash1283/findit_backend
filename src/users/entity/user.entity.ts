@@ -13,6 +13,9 @@ export class User {
   @Column({ nullable: true })
   address: string;
 
+  @Column({ nullable: true })
+  phone: string;
+
   @Column({ unique: true })
   email: string;
 
@@ -42,6 +45,9 @@ export class User {
 
   @Column({ default: 'unverified' })
   verificationStatus: string; // 'unverified', 'pending', 'verified', 'rejected'
+
+  @Column({ default: 0 })
+  verificationAttempts: number;
 
   @Column({ default: false })
   isSuspended: boolean;

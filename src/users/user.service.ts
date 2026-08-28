@@ -12,7 +12,7 @@ import { RegisterUserDto } from './dto/user.dto';
 import { User } from './entity/user.entity';
 import { Role } from './role.enum';
 import { join, extname, basename } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, unlinkSync } from 'fs';
 import { VisionService } from '../module/ai/vision.service';
 import {
   AutoVerificationResult,
@@ -42,6 +42,12 @@ export class UsersService {
   }
 
   async register(dto: RegisterUserDto): Promise<User> {
+    const disposableDomains = ['mailinator.com', 'tempmail.com', '10minutemail.com', 'yopmail.com', 'trashmail.com', 'dispostable.com', 'guerrillamail.com', 'getnada.com', 'throwawaymail.com'];
+    const emailDomain = dto.email.split('@')[1]?.toLowerCase();
+    if (disposableDomains.includes(emailDomain)) {
+      throw new BadRequestException('Disposable/temporary email addresses are not permitted. Please use a genuine email provider (e.g. Gmail, Outlook, Yahoo).');
+    }
+
     const role = dto.role || Role.USER;
     const user = this.userRepo.create({
       email: dto.email,
@@ -173,9 +179,10 @@ export class UsersService {
     return { message: 'Password changed successfully' };
   }
 
-  async updateProfile(id: number, data: { address?: string }): Promise<User> {
+  async updateProfile(id: number, data: { address?: string; phone?: string }): Promise<User> {
     const user = await this.findOne(id);
-    if (data.address) user.address = data.address;
+    if (data.address !== undefined) user.address = data.address;
+    if (data.phone !== undefined) user.phone = data.phone;
     return this.userRepo.save(user);
   }
 
@@ -260,6 +267,9 @@ export class UsersService {
   }
 
   async attemptAutoVerification(user: User): Promise<AutoVerificationResult> {
+    const currentAttempts = (user.verificationAttempts || 0) + 1;
+    user.verificationAttempts = currentAttempts;
+
     const accountName = user.name?.trim() || '';
     const base: AutoVerificationResult = {
       attempted: true,
@@ -268,9 +278,24 @@ export class UsersService {
       accountName,
       verified: false,
       rejected: false,
+      attemptsCount: currentAttempts,
+      maxAttempts: 6,
     };
 
+    // If max 6 attempts already exceeded
+    if (currentAttempts > 6) {
+      user.isVerified = false;
+      user.verificationStatus = 'pending';
+      await this.userRepo.save(user);
+      return {
+        ...base,
+        attempted: false,
+        reason: 'Maximum auto-verification attempts (6/6) reached. Your account is now pending manual review by an administrator.',
+      };
+    }
+
     if (!this.hasCompleteVerificationDocuments(user)) {
+      await this.userRepo.save(user);
       return {
         ...base,
         attempted: false,
@@ -283,20 +308,33 @@ export class UsersService {
     const { name: documentName, unavailable, isValid, reason: invalidReason } = await this.extractNameFromUserDocuments(user);
 
     if (!isValid) {
-      user.isVerified = false;
-      user.verificationStatus = 'rejected';
-      await this.userRepo.save(user);
-      return {
-        ...base,
-        attempted: true,
-        matched: false,
-        verified: false,
-        rejected: true,
-        reason: `Verification rejected: ${invalidReason || 'Uploaded images are not valid documents.'}`,
-      };
+      if (currentAttempts >= 6) {
+        user.isVerified = false;
+        user.verificationStatus = 'pending';
+        await this.userRepo.save(user);
+        return {
+          ...base,
+          verified: false,
+          rejected: false,
+          reason: `6 failed attempts reached. Uploaded document is unreadable. Account moved to manual review.`,
+        };
+      } else {
+        user.isVerified = false;
+        user.verificationStatus = 'rejected';
+        await this.userRepo.save(user);
+        return {
+          ...base,
+          verified: false,
+          rejected: true,
+          reason: `Verification attempt ${currentAttempts}/6 failed: ${invalidReason || 'Uploaded images are not valid documents.'}`,
+        };
+      }
     }
 
     if (!documentName) {
+      user.isVerified = false;
+      user.verificationStatus = 'pending';
+      await this.userRepo.save(user);
       return {
         ...base,
         reason: unavailable
@@ -311,27 +349,42 @@ export class UsersService {
       user.verificationStatus = 'verified';
       await this.userRepo.save(user);
       return {
-        attempted: true,
+        ...base,
         matched: true,
         documentName,
-        accountName,
         verified: true,
         rejected: false,
         reason: 'Document name matches account full name',
       };
     }
 
+    // Name Mismatch Case
+    if (currentAttempts >= 6) {
+      // 6th failed attempt -> move to manual review (pending) instead of rejecting!
+      user.isVerified = false;
+      user.verificationStatus = 'pending';
+      await this.userRepo.save(user);
+      return {
+        ...base,
+        matched: false,
+        documentName,
+        verified: false,
+        rejected: false,
+        reason: `Auto-verification limit (6/6 attempts) reached. Document name shows "${documentName}". Your request has been submitted for manual admin verification.`,
+      };
+    }
+
+    // Attempt failed (<6 attempts) -> reject so user can re-try uploading!
     user.isVerified = false;
     user.verificationStatus = 'rejected';
     await this.userRepo.save(user);
     return {
-      attempted: true,
+      ...base,
       matched: false,
       documentName,
-      accountName,
       verified: false,
       rejected: true,
-      reason: `Name mismatch: document shows "${documentName}", Account is "${accountName}"`,
+      reason: `Name mismatch (Attempt ${currentAttempts}/6): document shows "${documentName}", Account is "${accountName}". You have ${6 - currentAttempts} re-try attempt(s) left before manual review.`,
     };
   }
 
@@ -389,6 +442,24 @@ export class UsersService {
     }
     if (!requiresTwoPhotos(documentType) && backFilename) {
       throw new BadRequestException('Back photo is only required for citizenship card or student ID card');
+    }
+
+    // AI Vision Document Type Validation
+    const frontPath = join(process.cwd(), 'uploads', 'users', frontFilename);
+    if (existsSync(frontPath)) {
+      const docValidation = await this.visionService.validateDocumentType(frontPath, documentType);
+      if (!docValidation.isMatch) {
+        if (existsSync(frontPath)) unlinkSync(frontPath);
+        if (backFilename) {
+          const backPath = join(process.cwd(), 'uploads', 'users', backFilename);
+          if (existsSync(backPath)) unlinkSync(backPath);
+        }
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Document Type Mismatch',
+          message: docValidation.reason || `The uploaded document image does not match the selected document type "${documentType.replace(/_/g, ' ')}". Please upload a valid document image.`,
+        });
+      }
     }
 
     user.verificationDocumentType = documentType;

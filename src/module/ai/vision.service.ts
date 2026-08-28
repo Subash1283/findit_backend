@@ -167,22 +167,39 @@ export class VisionService {
     filePath: string,
     title: string,
     category: string,
+    documentType?: string,
   ): Promise<{ isMatch: boolean; reason?: string }> {
     if (!this.model) return { isMatch: true }; // Skip if AI not available
 
     try {
       const imagePart = await this.readImagePart(filePath);
 
+      let documentInstruction = '';
+      if (category.toLowerCase() === 'documents' && documentType) {
+        const readableDocType = documentType.replace(/_/g, ' ');
+        documentInstruction = `
+        CRITICAL DOCUMENT TYPE COMPLIANCE RULE:
+        The selected document type is "${readableDocType}".
+        You MUST verify that the document in the image is SPECIFICALLY a "${readableDocType}".
+        - If selected is "passport", the image MUST be a Passport. A Citizenship Card, Driving License, or Student ID MUST BE REJECTED with isMatch: false.
+        - If selected is "citizenship", the image MUST be a Citizenship Card/Certificate. A Passport or Driving License MUST BE REJECTED with isMatch: false.
+        - If selected is "driving license", the image MUST be a Driving License. A Passport or Citizenship Card MUST BE REJECTED with isMatch: false.
+        - If selected is "student id", the image MUST be a Student ID card.
+        - If selected is "certificate", the image MUST be an educational/official Certificate.
+        `;
+      }
+
       const prompt = `
-        You are a security assistant for a Lost and Found app.
-        The user claims this is a "${title}" in the category "${category}".
+        You are a strict document and item verification assistant for a Lost and Found app.
+        The user claims this item is a "${title}" in category "${category}".
+        ${documentInstruction}
         
-        Task: Verify if the image actually shows a "${title}" or something that belongs in the category "${category}".
+        Task: Verify if the image actually shows a "${title}" belonging to "${category}" AND strictly conforms to the specified document type if applicable.
         
         Return exactly in this JSON format:
         {
           "isMatch": boolean,
-          "reason": "Brief explanation if isMatch is false, otherwise empty"
+          "reason": "Brief explanation if isMatch is false (e.g., 'Uploaded image is a Citizenship Card, not a Passport'), otherwise empty string"
         }
       `;
 
@@ -190,10 +207,52 @@ export class VisionService {
       const jsonStr = responseText.match(/\{.*\}/s)?.[0] || '{"isMatch": true}';
       const validation = JSON.parse(jsonStr);
 
-      console.log(`[VisionService] Validation for "${title}":`, validation);
+      console.log(`[VisionService] Validation for "${title}" (${documentType || 'N/A'}):`, validation);
       return validation;
     } catch (error) {
       console.error('[VisionService] Validation failed:', error);
+      return { isMatch: true };
+    }
+  }
+
+  async validateDocumentType(
+    filePath: string,
+    documentType: string,
+  ): Promise<{ isMatch: boolean; reason?: string }> {
+    if (!this.model) return { isMatch: true };
+
+    try {
+      const imagePart = await this.readImagePart(filePath);
+      const readableDocType = documentType.replace(/_/g, ' ');
+
+      const prompt = `
+        You are a fraud prevention security inspector for identity document verification.
+        The user claims they are uploading a "${readableDocType}".
+
+        STRICT SPECIFIC DOCUMENT CHECKS:
+        1. If claimed type is "passport": The photo MUST be an official Passport (showing passport header, MRZ code lines at the bottom, or passport layout). A Citizenship card, Driving License, National ID card, or Student ID MUST BE REJECTED.
+        2. If claimed type is "citizenship" or "citizenship card": The photo MUST be a Citizenship Card/Certificate (e.g. Nepali Citizenship Certificate). A Passport, Driving License, or Student ID MUST BE REJECTED.
+        3. If claimed type is "driving license" or "drivers license": The photo MUST be a Driving License. A Passport or Citizenship Card MUST BE REJECTED.
+        4. If claimed type is "student id": The photo MUST be a Student ID Card.
+        5. If claimed type is "certificate": The photo MUST be an educational or official Certificate.
+
+        Is this uploaded document image SPECIFICALLY a "${readableDocType}"?
+
+        Return ONLY JSON:
+        {
+          "isMatch": boolean,
+          "reason": "Clear error message if isMatch is false (e.g., 'Uploaded image is a Citizenship Card, but you selected Passport. Please upload a valid Passport.'), otherwise empty string"
+        }
+      `;
+
+      const responseText = await this.generateContentText([prompt, imagePart]);
+      const jsonStr = responseText.match(/\{.*\}/s)?.[0] || '{"isMatch": true}';
+      const validation = JSON.parse(jsonStr);
+
+      console.log(`[VisionService] Verification Document Check for "${documentType}":`, validation);
+      return validation;
+    } catch (error) {
+      console.error('[VisionService] Document type validation failed:', error);
       return { isMatch: true };
     }
   }
@@ -215,11 +274,16 @@ export class VisionService {
    //Extracts the holder's name from an identity document image.
    // Uses LOCAL Tesseract.js OCR — the image never leaves the server.
   
+  /**
+   * Extracts the holder's name from an identity document image.
+   * Uses LOCAL Tesseract.js OCR — the image file NEVER leaves the server.
+   * Only the extracted text string is processed to parse the name.
+   */
   async extractNameFromIdentityDocument(
     filePath: string,
     documentType: string = 'identity document',
   ): Promise<{ name: string | null; unavailable?: boolean; isValid: boolean; reason?: string }> {
-    console.log('[VisionService] Using local OCR (Tesseract) — document stays on-server, no cloud call.');
+    console.log('[VisionService] Running Local Tesseract OCR on document (image stays on server)...');
     const result = await this.localOcr.extractNameFromDocument(filePath, documentType);
     console.log(`[VisionService] Extracted document name: ${result.name ?? '(none)'}, isValid: ${result.isValid}`);
     return result;

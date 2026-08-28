@@ -138,6 +138,7 @@ export class UsersController {
 
     return this.usersService.updateProfile(req.user.id, {
       address: body.address,
+      phone: body.phone,
     });
   }
 

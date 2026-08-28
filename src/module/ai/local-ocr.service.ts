@@ -5,6 +5,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { transliterateDevanagari } from '../../users/identity-verification.util';
 @Injectable()
 export class LocalOcrService {
   private readonly logger = new Logger(LocalOcrService.name);
@@ -39,9 +40,13 @@ export class LocalOcrService {
       this.logger.log(
         `[LocalOCR] Starting OCR on document type: ${documentType}`,
       );
-      const worker = await createWorker('eng+nep', 1, {
-        logger: () => {},
-      });
+      let worker;
+      try {
+        worker = await createWorker('eng+nep', 1, { logger: () => {} });
+      } catch (err) {
+        this.logger.warn('[LocalOCR] Could not load eng+nep worker, falling back to eng:', err);
+        worker = await createWorker('eng', 1, { logger: () => {} });
+      }
 
       const {
         data: { text },
@@ -62,12 +67,56 @@ export class LocalOcrService {
         );
         return {
           name: null,
-          isValid: false,
-          reason: 'Could not read any text from the uploaded image.',
+          isValid: true,
+          reason: 'Could not read text from the uploaded image — left for review.',
         };
       }
 
-      //  Try local pattern matching first
+      // Document Type Mismatch Verification via Text Keywords
+      const lowerText = text.toLowerCase();
+      const normDocType = (documentType || '').toLowerCase().trim();
+
+      if (normDocType === 'passport') {
+        if (/citizenship|नागरिकता|वंशज/i.test(text)) {
+          return {
+            name: null,
+            isValid: false,
+            reason: 'The uploaded image appears to be a Citizenship Card, but Passport was selected. Please upload a valid Passport.',
+          };
+        }
+        if (/driving\s*license|sawabari|सवारी\s*चालक/i.test(text)) {
+          return {
+            name: null,
+            isValid: false,
+            reason: 'The uploaded image appears to be a Driving License, but Passport was selected. Please upload a valid Passport.',
+          };
+        }
+      } else if (normDocType === 'citizenship') {
+        if (/passport\s*no|republic\s*of\s*nepal\s*passport|p<npl/i.test(text)) {
+          return {
+            name: null,
+            isValid: false,
+            reason: 'The uploaded image appears to be a Passport, but Citizenship Card was selected. Please upload a valid Citizenship Card.',
+          };
+        }
+      } else if (normDocType === 'driving_license' || normDocType === 'drivers_license') {
+        if (/citizenship|नागरिकता|वंशज/i.test(text)) {
+          return {
+            name: null,
+            isValid: false,
+            reason: 'The uploaded image appears to be a Citizenship Card, but Driving License was selected. Please upload a valid Driving License.',
+          };
+        }
+        if (/passport\s*no|republic\s*of\s*nepal\s*passport|p<npl/i.test(text)) {
+          return {
+            name: null,
+            isValid: false,
+            reason: 'The uploaded image appears to be a Passport, but Driving License was selected. Please upload a valid Driving License.',
+          };
+        }
+      }
+
+      // Try local pattern matching first
       const name = this.parseNameFromOcrText(text);
 
       if (name) {
@@ -88,6 +137,14 @@ export class LocalOcrService {
       if (aiName) {
         this.logger.log(`[LocalOCR] Gemini parsed name from text: ${aiName}`);
         return { name: aiName, isValid: true };
+      }
+
+      // Final fallback: Transliterate entire raw text block to find any candidate name
+      const fullTransliterated = transliterateDevanagari(text);
+      const fallbackName = this.parseNameFromOcrText(fullTransliterated);
+      if (fallbackName) {
+        this.logger.log(`[LocalOCR] Parsed name via full transliterated text fallback: ${fallbackName}`);
+        return { name: fallbackName, isValid: true };
       }
 
       this.logger.log(
@@ -170,46 +227,58 @@ If no name found, return: { "fullName": null }
       .filter((l) => l.length > 1);
 
     // ── Strategy 1: label + value on the SAME line
-    // e.g. "Name: Subash Shrestha"
+    // e.g. "== te Name.: - ~ SUMIT SHRESTHA i" or "Name: Subash Shrestha"
     const inlineLabelPatterns = [
-      /^(?:full\s*)?name\s*(?:of\s*(?:holder|applicant))?\s*[:\-\/]\s*(.+)/i,
-      /^naam\s*[:\-]\s*(.+)/i,
-      /^नाम\s*[:\-\/]\s*(.+)/i,
+      /(?:full\s*)?name\s*(?:of\s*(?:holder|applicant))?\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
+      /naam\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
+      /नाम\s*(?:थर)?\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
     ];
 
     for (const line of lines) {
+      // Ignore issuing officer lines at the bottom of citizenship cards
+      if (/दर्जा|drja|प्रशासकीय|अधिकृत|दस्तखत/i.test(line)) continue;
+
       for (const pattern of inlineLabelPatterns) {
         const match = line.match(pattern);
         if (match) {
-          const candidate = this.cleanName(match[1]);
+          let rawVal = match[1];
+          if (/[\u0900-\u097F]/.test(rawVal)) {
+            rawVal = transliterateDevanagari(rawVal);
+          }
+          const candidate = this.cleanName(rawVal);
           if (
             candidate &&
             this.isPlausibleName(candidate) &&
             !this.isOcrGarbage(candidate) &&
             !this.containsFieldKeyword(candidate)
-          )
+          ) {
+            this.logger.log(`[LocalOCR] Name found via inline pattern: "${candidate}"`);
             return candidate;
+          }
         }
       }
     }
 
     // ── Strategy 2: label on one line, name on the NEXT line ─────────────
     // Nepali citizenship cards: "नाम / Full Name of Holder" then next line is the name.
-    // IMPORTANT: Only use a line as a candidate if it is purely ASCII (Roman)
-    // to avoid picking up garbled Devanagari text mis-read by Tesseract.
     const nextLineLabelPattern =
       /(?:full\s*)?name\s*(?:of\s*(?:holder|applicant))?|नाम/i;
 
     for (let i = 0; i < lines.length - 1; i++) {
+      if (/दर्जा|drja|प्रशासकीय|अधिकृत|दस्तखत/i.test(lines[i])) continue;
+
       if (nextLineLabelPattern.test(lines[i])) {
         for (
           let offset = 1;
           offset <= 2 && i + offset < lines.length;
           offset++
         ) {
-          const nextLine = lines[i + offset];
-          // Skip Devanagari-only or mixed lines — these are Nepali-script noise
-          if (/[^\x00-\x7F]/.test(nextLine)) continue;
+          let nextLine = lines[i + offset];
+          if (/दर्जा|drja|प्रशासकीय|अधिकृत|दस्तखत/i.test(nextLine)) continue;
+
+          if (/[\u0900-\u097F]/.test(nextLine)) {
+            nextLine = transliterateDevanagari(nextLine);
+          }
           const candidate = this.cleanName(nextLine);
           if (
             candidate &&
@@ -294,18 +363,16 @@ If no name found, return: { "fullName": null }
     ]);
 
     for (const line of lines) {
-      if (/[^\x00-\x7F]/.test(line)) continue; // Skip Devanagari-only lines
+      let targetLine = line;
+      if (/[\u0900-\u097F]/.test(targetLine)) {
+        targetLine = transliterateDevanagari(targetLine);
+      }
 
-      const words = line.split(/\s+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)); // min 2 chars per word
+      const words = targetLine.split(/\s+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)); // min 2 chars per word
       if (words.length < 2 || words.length > 4) continue;
 
       const hasKeyword = words.some((w) => skipKeywords.has(w.toLowerCase()));
       if (hasKeyword) continue;
-
-      const looksLikeName = words.every(
-        (w) => /^[A-Z][A-Za-z]*$/.test(w) || /^[A-Z]{2,}$/.test(w),
-      );
-      if (!looksLikeName) continue;
 
       const candidate = this.cleanName(words.join(' '));
       if (
@@ -396,14 +463,17 @@ If no name found, return: { "fullName": null }
   //Converts ALL-CAPS to Title Case, removes punctuation & digits, etc.
 
   private cleanName(raw: string): string | null {
-    const cleaned = raw
+    let cleaned = raw
       .replace(/[^A-Za-z\s\-'\.]/g, '') // Remove digits, special chars
       .replace(/\s+/g, ' ')
       .trim();
 
+    // Strip trailing single letter OCR noise (e.g., 'i', 'x', 'a' at end of line)
+    cleaned = cleaned.replace(/\s+[a-zA-Z]$/, '').trim();
+
     if (cleaned.length < 3) return null;
 
-    // Convert ALL CAPS → Title Case (e.g., "Subash SHRESTHA" → "Subash Shrestha")
+    // Convert ALL CAPS → Title Case (e.g., "SUMIT SHRESTHA" → "Sumit Shrestha")
     const isAllCaps = cleaned === cleaned.toUpperCase();
     if (isAllCaps) {
       return cleaned.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());

@@ -179,6 +179,7 @@ export class ItemsService {
           fullPath,
           expectedTitle,
           dto.category,
+          dto.documentType,
         );
         if (!validation.isMatch) {
           // Delete the uploaded file since validation failed

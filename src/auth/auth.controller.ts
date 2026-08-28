@@ -29,6 +29,11 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
+  @Post('send-magic-link')
+  sendMagicLink(@Body('email') email: string) {
+    return this.authService.sendMagicLink(email);
+  }
+
   
   @Get('google')
   @UseGuards(AuthGuard('google'))
