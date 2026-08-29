@@ -21,6 +21,7 @@ import { ILike, Not } from 'typeorm';
 
 import { Dispute } from './entities/dispute.entity';
 import { ClaimRequest, ClaimStatus } from './entities/claim-request.entity';
+import { ChatService } from '../chat/chat.service';
 
 @Injectable()
 export class ItemsService {
@@ -35,6 +36,7 @@ export class ItemsService {
     private notificationsService: NotificationsService,
     private mailerService: MailerService,
     private visionService: VisionService,
+    private chatService: ChatService,
   ) {
     ensureDirSync(join(process.cwd(), 'uploads', 'items'));
   }
@@ -925,6 +927,35 @@ export class ItemsService {
       throw new BadRequestException('Only the item owner can respond to claim requests');
     }
 
+    // ── Revoke an already-approved claim ──────────────────────────────────
+    if (status === ClaimStatus.REVOKED) {
+      if (claimRequest.status !== ClaimStatus.APPROVED) {
+        throw new BadRequestException('Only approved claims can be revoked');
+      }
+
+      claimRequest.status = ClaimStatus.REVOKED;
+      claimRequest.verificationCode = null;
+      await this.claimRequestRepository.save(claimRequest);
+
+      // Reset the item back to active so a new claim can be made
+      const item = claimRequest.item;
+      item.status = ItemStatus.ACTIVE;
+      item.claimedById = null;
+      await this.itemRepository.save(item);
+
+      // Delete all chat messages between the owner and the faker for this item
+      await this.chatService.deleteConversation(item.id, ownerId, claimRequest.userId);
+
+      await this.notificationsService.create(
+        claimRequest.userId,
+        `Your approved claim for "${item.title}" has been revoked by the owner.`,
+        `/items/${item.id}`
+      );
+
+      return { message: 'Claim revoked successfully. The item is now available for new claimers.' };
+    }
+
+    // ── Approve / Reject — only allowed on PENDING claims ─────────────────
     if (claimRequest.status !== ClaimStatus.PENDING) {
       throw new BadRequestException('This claim request has already been processed');
     }

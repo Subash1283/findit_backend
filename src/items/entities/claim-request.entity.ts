@@ -14,6 +14,7 @@ export enum ClaimStatus {
   PENDING = 'PENDING',
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
+  REVOKED = 'REVOKED',
 }
 
 @Entity()

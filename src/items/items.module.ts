@@ -15,6 +15,7 @@ import { AIModule } from '../module/ai/ai.module';
 
 import { ClaimRequest } from './entities/claim-request.entity';
 import { ItemsCleanupService } from './items.cleanup.service';
+import { ChatModule } from '../chat/chat.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ItemsCleanupService } from './items.cleanup.service';
     NotificationsModule,
     ResetPasswordModule,
     AIModule,
+    ChatModule,
 
     //  File upload config
     MulterModule.register({
