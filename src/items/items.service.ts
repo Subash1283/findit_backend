@@ -203,11 +203,15 @@ export class ItemsService {
           });
         }
 
-        item.tags = await this.visionService.analyzeImage(
-          fullPath,
-          expectedTitle,
-          dto.category,
-        );
+        // Skip AI auto-labeling for documents — document type already identifies the item
+        // and documents contain sensitive personal information not suitable for AI tagging
+        if (category !== 'documents') {
+          item.tags = await this.visionService.analyzeImage(
+            fullPath,
+            expectedTitle,
+            dto.category,
+          );
+        }
       } catch (err) {
         if (err instanceof BadRequestException) throw err;
         console.error('AI Vision error:', err);
