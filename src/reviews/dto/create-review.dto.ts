@@ -21,4 +21,8 @@ export class CreateReviewDto {
   @IsNumber()
   @IsOptional()
   itemId?: number;
+
+  @IsString()
+  @IsOptional()
+  image?: string;
 }

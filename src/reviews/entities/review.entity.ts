@@ -31,6 +31,9 @@ export class Review {
   @Column({ type: 'text', nullable: true })
   adminResponse: string;
 
+  @Column({ nullable: true })
+  image?: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -1,4 +1,5 @@
-import { Controller, Post, Get, Patch, Delete, Body, Param, ParseIntPipe, UseGuards, Req, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Body, Param, ParseIntPipe, UseGuards, Req, UsePipes, ValidationPipe, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ReviewsService } from './reviews.service';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { JwtAuthGuard } from '../module/common/guards/jwt-authguard';
@@ -12,8 +13,20 @@ export class ReviewsController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
-  @UsePipes(new ValidationPipe())
-  create(@Body() dto: CreateReviewDto, @Req() req: any) {
+  @UseInterceptors(
+    FileInterceptor('image', {
+      dest: './uploads/reviews/',
+    }),
+  )
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: false }))
+  create(
+    @Body() dto: CreateReviewDto,
+    @Req() req: any,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (file) {
+      dto.image = file.filename;
+    }
     return this.reviewsService.create(req.user.id, dto);
   }
 
