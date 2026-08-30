@@ -66,12 +66,15 @@ export class VisionService {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           // 25-second timeout per call to prevent Render free tier from killing the connection
+          const aiPromise = model.generateContent(parts);
+          aiPromise.catch(() => {}); // Prevent unhandled rejection crash if it fails after timeout
+
           const result = await Promise.race([
-            model.generateContent(parts),
+            aiPromise,
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error('AI call timed out (25s)')), 25000),
             ),
-          ]);
+          ]) as import('@google/generative-ai').GenerateContentResult;
           if (modelId !== modelIds[0] && attempt === 0) {
             console.log(`[VisionService] Using fallback model: ${modelId}`);
           }
