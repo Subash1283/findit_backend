@@ -36,16 +36,16 @@ export class LocalOcrService {
       decryptedTmp = path.join(os.tmpdir(), `findit-ocr-${Date.now()}${ext}`);
       fs.writeFileSync(decryptedTmp, imageBuffer);
 
-      // Run Tesseract OCR (eng + nep languages)
+      // Run Tesseract OCR (English only to stay under Render 512MB RAM limits)
       this.logger.log(
         `[LocalOCR] Starting OCR on document type: ${documentType}`,
       );
       let worker;
       try {
-        worker = await createWorker('eng+nep', 1, { logger: () => {} });
-      } catch (err) {
-        this.logger.warn('[LocalOCR] Could not load eng+nep worker, falling back to eng:', err);
         worker = await createWorker('eng', 1, { logger: () => {} });
+      } catch (err) {
+        this.logger.warn('[LocalOCR] Could not load eng worker:', err);
+        throw err;
       }
 
       const {
