@@ -60,12 +60,19 @@ export class VisionService {
     }
 
     let lastError: unknown;
-    for (const modelId of this.getModelIds()) {
+    const modelIds = this.getModelIds().slice(0, 2); // Limit to 2 models max to avoid Render timeout
+    for (const modelId of modelIds) {
       const model = this.genAI.getGenerativeModel({ model: modelId });
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const result = await model.generateContent(parts);
-          if (modelId !== this.getModelIds()[0] && attempt === 0) {
+          // 25-second timeout per call to prevent Render free tier from killing the connection
+          const result = await Promise.race([
+            model.generateContent(parts),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('AI call timed out (25s)')), 25000),
+            ),
+          ]);
+          if (modelId !== modelIds[0] && attempt === 0) {
             console.log(`[VisionService] Using fallback model: ${modelId}`);
           }
           return result.response.text();
@@ -74,10 +81,10 @@ export class VisionService {
           const status = (error as { status?: number })?.status;
           const retryable = this.isRetryableError(error);
           if (!retryable) break;
-          if (attempt < 2) {
+          if (attempt < 1) {
             const delayMs = 1000 * 2 ** attempt;
             console.warn(
-              `[VisionService] ${modelId} unavailable (${status ?? 'error'}), retry ${attempt + 1}/3 in ${delayMs}ms`,
+              `[VisionService] ${modelId} unavailable (${status ?? 'error'}), retry ${attempt + 1}/2 in ${delayMs}ms`,
             );
             await this.sleep(delayMs);
           }

@@ -34,6 +34,10 @@ import { ReviewsModule } from './reviews/reviews.module';
 
         autoLoadEntities: true,
         synchronize: true, 
+        // Render PostgreSQL requires SSL for all connections
+        ssl: process.env.NODE_ENV === 'production'
+          ? { rejectUnauthorized: false }
+          : false,
       }),
     }),
   
