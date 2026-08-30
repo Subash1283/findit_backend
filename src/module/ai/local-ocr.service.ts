@@ -36,16 +36,23 @@ export class LocalOcrService {
       decryptedTmp = path.join(os.tmpdir(), `findit-ocr-${Date.now()}${ext}`);
       fs.writeFileSync(decryptedTmp, imageBuffer);
 
-      // Run Tesseract OCR (English only to stay under Render 512MB RAM limits)
+      // Run Tesseract OCR (eng + nep languages)
+      // Using '4.0.0_fast' models to significantly reduce RAM usage and prevent Render OOM crashes
       this.logger.log(
-        `[LocalOCR] Starting OCR on document type: ${documentType}`,
+        `[LocalOCR] Starting OCR on document type: ${documentType} with fast models`,
       );
       let worker;
       try {
-        worker = await createWorker('eng', 1, { logger: () => {} });
+        worker = await createWorker('eng+nep', 1, {
+          logger: () => {},
+          langPath: 'https://tessdata.projectnaptha.com/4.0.0_fast',
+        });
       } catch (err) {
-        this.logger.warn('[LocalOCR] Could not load eng worker:', err);
-        throw err;
+        this.logger.warn('[LocalOCR] Could not load eng+nep fast worker, falling back to eng:', err);
+        worker = await createWorker('eng', 1, {
+          logger: () => {},
+          langPath: 'https://tessdata.projectnaptha.com/4.0.0_fast',
+        });
       }
 
       const {
