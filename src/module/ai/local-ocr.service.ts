@@ -55,9 +55,22 @@ export class LocalOcrService {
         });
       }
 
-      const {
-        data: { text },
-      } = await worker.recognize(decryptedTmp);
+      this.logger.log('[LocalOCR] Worker loaded. Starting recognize...');
+      const recognizePromise = worker.recognize(decryptedTmp);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Tesseract timeout (35s)')), 35000)
+      );
+
+      let text = '';
+      try {
+        const result = await Promise.race([recognizePromise, timeoutPromise]) as any;
+        text = result.data.text;
+      } catch (timeoutErr) {
+        this.logger.warn(`[LocalOCR] Tesseract failed or timed out: ${timeoutErr}`);
+        await worker.terminate();
+        return { name: null, isValid: true, reason: 'OCR took too long, moving to manual review.' };
+      }
+      
       await worker.terminate();
 
       this.logger.log(
@@ -204,7 +217,16 @@ Return ONLY valid JSON:
 If no name found, return: { "fullName": null }
 `;
 
-      const result = await model.generateContent(prompt);
+      const aiPromise = model.generateContent(prompt);
+      aiPromise.catch(() => {}); // prevent UnhandledPromiseRejection if it fails late
+
+      const result = await Promise.race([
+        aiPromise,
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Gemini text parse timeout')), 15000)
+        )
+      ]) as import('@google/generative-ai').GenerateContentResult;
+
       const responseText = result.response.text();
       const jsonStr = responseText.match(/\{[\s\S]*\}/)?.[0] || '{}';
       const parsed = JSON.parse(jsonStr);
