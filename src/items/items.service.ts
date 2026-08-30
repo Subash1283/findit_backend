@@ -445,7 +445,7 @@ export class ItemsService {
 </html>`;
 
         if (attachments.length > 0) {
-          await this.mailerService
+          this.mailerService
             .sendMailWithAttachments(
               user.email,
               `${typeLabel} Item Posted: ${savedItem.title} - FindIT`,
@@ -454,7 +454,7 @@ export class ItemsService {
             )
             .catch((e) => console.error('Post confirmation email error:', e));
         } else {
-          await this.mailerService
+          this.mailerService
             .sendMail(
               user.email,
               `${typeLabel} Item Posted: ${savedItem.title} - FindIT`,
