@@ -1632,69 +1632,768 @@ export class ItemsService {
     };
   }
 
-  async generateReturnedItemsPdf(res: any, statusFilter?: string, startDate?: string, endDate?: string) {
-    const PDFDocument = require('pdfkit');
-    const doc = new PDFDocument({ margin: 30, size: 'A4' });
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="returned-items-report.pdf"');
 
-    doc.pipe(res);
+async generateReturnedItemsPdf(
+  res: any,
+  statusFilter?: string,
+  startDate?: string,
+  endDate?: string,
+) {
+  const PDFDocument = require('pdfkit');
 
-    // Header
-    doc.fillColor('#0c1a3a').fontSize(22).text('FindIt - Returned Items & Claims Report', { align: 'center' });
-    doc.moveDown(0.5);
-    doc.fillColor('#64748b').fontSize(10).text(`Generated on: ${new Date().toLocaleString()}`, { align: 'center' });
-    doc.moveDown(1);
+  const doc = new PDFDocument({
+    size: 'A4',
+    margin: 0,
+    bufferPages: false,
+  });
 
-    const queryBuilder = this.claimRequestRepository.createQueryBuilder('claim')
-      .leftJoinAndSelect('claim.item', 'item')
-      .leftJoinAndSelect('claim.user', 'claimant')
-      .leftJoinAndSelect('item.user', 'finder')
-      .orderBy('claim.createdAt', 'DESC');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    'attachment; filename="returned-items-report.pdf"',
+  );
 
-    if (statusFilter && statusFilter !== 'all') {
-      queryBuilder.andWhere('claim.status = :status', { status: statusFilter.toUpperCase() });
-    }
+  doc.pipe(res);
 
-    if (startDate) {
-      queryBuilder.andWhere('claim.createdAt >= :startDate', { startDate: new Date(startDate) });
-    }
+  const COLORS = {
+    primary: '#166534',
+    primaryDark: '#14532D',
+    accent: '#22C55E',
+    accentLight: '#DCFCE7',
+    background: '#F8FAFC',
+    white: '#FFFFFF',
+    text: '#1E293B',
+    textSecondary: '#475569',
+    muted: '#64748B',
+    border: '#E2E8F0',
+    success: '#15803D',
+    successBg: '#DCFCE7',
+    warning: '#B45309',
+    warningBg: '#FEF3C7',
+    danger: '#B91C1C',
+    dangerBg: '#FEE2E2',
+    info: '#2563EB',
+    infoBg: '#DBEAFE',
+  };
 
-    if (endDate) {
-      queryBuilder.andWhere('claim.createdAt <= :endDate', { endDate: new Date(endDate) });
-    }
+  const PAGE_WIDTH = 595.28;
+  const PAGE_HEIGHT = 841.89;
+  const LEFT = 25;
+  const RIGHT = 570;
+  const CONTENT_WIDTH = RIGHT - LEFT;
 
-    const claims = await queryBuilder.getMany();
+  const queryBuilder = this.claimRequestRepository
+    .createQueryBuilder('claim')
+    .leftJoinAndSelect('claim.item', 'item')
+    .leftJoinAndSelect('claim.user', 'claimant')
+    .leftJoinAndSelect('item.user', 'finder')
+    .orderBy('claim.createdAt', 'DESC');
 
-    doc.fillColor('#0f172a').fontSize(12).text(`Total Claims Found: ${claims.length}`, { underline: true });
-    doc.moveDown(1);
-
-    claims.forEach((c, index) => {
-      if (doc.y > 700) {
-        doc.addPage();
-      }
-
-      doc.rect(30, doc.y, 535, 105).fillAndStroke('#f8fafc', '#e2e8f0');
-      const startY = doc.y + 8;
-
-      doc.fillColor('#0c1a3a').fontSize(11).text(`#${index + 1} | Claim ID: ${c.id} | Item: ${c.item?.title || 'Unknown'} (Item ID: ${c.itemId})`, 40, startY, { bold: true });
-      
-      doc.fillColor('#334155').fontSize(9).text(`Claimant: ${c.user?.name || 'N/A'} (${c.user?.email || 'N/A'})`, 40, startY + 18);
-      doc.fillColor('#334155').fontSize(9).text(`Finder/Owner: ${c.item?.user?.name || 'N/A'} (${c.item?.user?.email || 'N/A'})`, 280, startY + 18);
-
-      doc.fillColor('#0284c7').fontSize(9).text(`Claim Status: ${c.status}`, 40, startY + 34);
-      doc.fillColor('#16a34a').fontSize(9).text(`Item Status: ${c.item?.status || 'N/A'}`, 280, startY + 34);
-
-      doc.fillColor('#64748b').fontSize(8).text(`Claim Date: ${c.createdAt ? new Date(c.createdAt).toLocaleDateString() : 'N/A'}`, 40, startY + 52);
-      doc.fillColor('#64748b').fontSize(8).text(`Verified Date: ${c.verifiedAt ? new Date(c.verifiedAt).toLocaleDateString() : 'N/A'}`, 170, startY + 52);
-      doc.fillColor('#64748b').fontSize(8).text(`Arranged Date: ${c.returnArrangedAt ? new Date(c.returnArrangedAt).toLocaleDateString() : 'N/A'}`, 300, startY + 52);
-      doc.fillColor('#64748b').fontSize(8).text(`Received Date: ${c.receivedAt ? new Date(c.receivedAt).toLocaleDateString() : 'N/A'}`, 430, startY + 52);
-
-      doc.moveDown(7);
+  if (statusFilter && statusFilter !== 'all') {
+    queryBuilder.andWhere('claim.status = :status', {
+      status: statusFilter.toUpperCase(),
     });
-
-    doc.end();
   }
-}
 
+  if (startDate) {
+    queryBuilder.andWhere('claim.createdAt >= :startDate', {
+      startDate: new Date(startDate),
+    });
+  }
+
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    queryBuilder.andWhere('claim.createdAt <= :endDate', {
+      endDate: end,
+    });
+  }
+
+  const claims = await queryBuilder.getMany();
+
+  const formatDate = (date: any) => {
+    if (!date) return 'N/A';
+
+    return new Date(date).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  };
+
+  const getStatusColors = (status: string) => {
+    const value = status?.toUpperCase();
+
+    if (
+      value === 'APPROVED' ||
+      value === 'VERIFIED' ||
+      value === 'RETURNED' ||
+      value === 'COMPLETED'
+    ) {
+      return {
+        text: COLORS.success,
+        background: COLORS.successBg,
+      };
+    }
+
+    if (value === 'PENDING' || value === 'WAITING') {
+      return {
+        text: COLORS.warning,
+        background: COLORS.warningBg,
+      };
+    }
+
+    if (value === 'REJECTED' || value === 'CANCELLED') {
+      return {
+        text: COLORS.danger,
+        background: COLORS.dangerBg,
+      };
+    }
+
+    return {
+      text: COLORS.info,
+      background: COLORS.infoBg,
+    };
+  };
+
+  doc
+    .rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT)
+    .fill(COLORS.background);
+
+  doc
+    .rect(0, 0, PAGE_WIDTH, 90)
+    .fill(COLORS.primary);
+
+  doc
+    .rect(0, 87, PAGE_WIDTH, 3)
+    .fill(COLORS.accent);
+
+  doc
+    .circle(48, 42, 22)
+    .fill(COLORS.white);
+
+  doc
+    .fillColor(COLORS.primary)
+    .font('Helvetica-Bold')
+    .fontSize(19)
+    .text('F', 42, 31);
+
+  doc
+    .fillColor(COLORS.white)
+    .font('Helvetica-Bold')
+    .fontSize(21)
+    .text('FindIt', 80, 22);
+
+  doc
+    .fillColor('#BBF7D0')
+    .font('Helvetica')
+    .fontSize(7.5)
+    .text(
+      'LOST & FOUND MANAGEMENT SYSTEM',
+      82,
+      47,
+    );
+
+  doc
+    .fillColor(COLORS.white)
+    .font('Helvetica-Bold')
+    .fontSize(12)
+    .text(
+      'Returned Items & Claims Report',
+      82,
+      62,
+    );
+
+  doc
+    .fillColor('#DCFCE7')
+    .font('Helvetica')
+    .fontSize(7)
+    .text(
+      `Generated: ${new Date().toLocaleString()}`,
+      340,
+      67,
+      {
+        width: 225,
+        align: 'right',
+      },
+    );
+
+  const infoY = 105;
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica-Bold')
+    .fontSize(7)
+    .text(
+      'REPORT INFORMATION',
+      LEFT,
+      infoY,
+    );
+
+  const infoCardY = infoY + 12;
+
+  doc
+    .roundedRect(
+      LEFT,
+      infoCardY,
+      CONTENT_WIDTH,
+      45,
+      7,
+    )
+    .fill(COLORS.white);
+
+  doc
+    .roundedRect(
+      LEFT,
+      infoCardY,
+      CONTENT_WIDTH,
+      45,
+      7,
+    )
+    .lineWidth(0.6)
+    .stroke(COLORS.border);
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica-Bold')
+    .fontSize(6)
+    .text(
+      'STATUS',
+      38,
+      infoCardY + 8,
+    );
+
+  doc
+    .fillColor(COLORS.text)
+    .font('Helvetica-Bold')
+    .fontSize(8)
+    .text(
+      statusFilter && statusFilter !== 'all'
+        ? statusFilter.toUpperCase()
+        : 'ALL CLAIMS',
+      38,
+      infoCardY + 20,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica-Bold')
+    .fontSize(6)
+    .text(
+      'FROM',
+      170,
+      infoCardY + 8,
+    );
+
+  doc
+    .fillColor(COLORS.text)
+    .font('Helvetica')
+    .fontSize(8)
+    .text(
+      startDate ? formatDate(startDate) : 'All dates',
+      170,
+      infoCardY + 20,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica-Bold')
+    .fontSize(6)
+    .text(
+      'TO',
+      290,
+      infoCardY + 8,
+    );
+
+  doc
+    .fillColor(COLORS.text)
+    .font('Helvetica')
+    .fontSize(8)
+    .text(
+      endDate ? formatDate(endDate) : 'All dates',
+      290,
+      infoCardY + 20,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica-Bold')
+    .fontSize(6)
+    .text(
+      'TOTAL CLAIMS',
+      435,
+      infoCardY + 8,
+    );
+
+  doc
+    .fillColor(COLORS.primary)
+    .font('Helvetica-Bold')
+    .fontSize(13)
+    .text(
+      `${claims.length}`,
+      435,
+      infoCardY + 17,
+    );
+
+  const sectionY = infoCardY + 57;
+
+  doc
+    .fillColor(COLORS.text)
+    .font('Helvetica-Bold')
+    .fontSize(11)
+    .text(
+      'Claim Records',
+      LEFT,
+      sectionY,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica')
+    .fontSize(7)
+    .text(
+      'Detailed information about returned items and their claims.',
+      LEFT,
+      sectionY + 15,
+    );
+
+  const cardsStartY = sectionY + 32;
+  const footerHeight = 55;
+  const availableHeight =
+    PAGE_HEIGHT - cardsStartY - footerHeight;
+
+  if (claims.length === 0) {
+    const emptyY = cardsStartY + 15;
+
+    doc
+      .roundedRect(
+        LEFT,
+        emptyY,
+        CONTENT_WIDTH,
+        100,
+        8,
+      )
+      .fill(COLORS.white);
+
+    doc
+      .roundedRect(
+        LEFT,
+        emptyY,
+        CONTENT_WIDTH,
+        100,
+        8,
+      )
+      .lineWidth(0.6)
+      .stroke(COLORS.border);
+
+    doc
+      .circle(
+        PAGE_WIDTH / 2,
+        emptyY + 35,
+        16,
+      )
+      .fill(COLORS.accentLight);
+
+    doc
+      .fillColor(COLORS.primary)
+      .font('Helvetica-Bold')
+      .fontSize(13)
+      .text(
+        '✓',
+        PAGE_WIDTH / 2 - 5,
+        emptyY + 27,
+      );
+
+    doc
+      .fillColor(COLORS.text)
+      .font('Helvetica-Bold')
+      .fontSize(10)
+      .text(
+        'No claims found',
+        LEFT,
+        emptyY + 58,
+        {
+          width: CONTENT_WIDTH,
+          align: 'center',
+        },
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica')
+      .fontSize(7)
+      .text(
+        'No claim records match the selected filters.',
+        LEFT,
+        emptyY + 75,
+        {
+          width: CONTENT_WIDTH,
+          align: 'center',
+        },
+      );
+  }
+
+  let cardHeight = 0;
+
+  if (claims.length > 0) {
+    cardHeight =
+      (availableHeight - (claims.length - 1) * 5) /
+      claims.length;
+  }
+
+  cardHeight = Math.max(cardHeight, 28);
+  cardHeight = Math.min(cardHeight, 90);
+
+  let titleFontSize = 8.5;
+  let normalFontSize = 6;
+  let smallFontSize = 5.2;
+
+  if (claims.length > 8) {
+    titleFontSize = 7;
+    normalFontSize = 5.3;
+    smallFontSize = 4.6;
+  }
+
+  if (claims.length > 12) {
+    titleFontSize = 6;
+    normalFontSize = 4.7;
+    smallFontSize = 4.1;
+  }
+
+  if (claims.length > 18) {
+    titleFontSize = 5.5;
+    normalFontSize = 4.2;
+    smallFontSize = 3.7;
+  }
+
+  claims.forEach((c, index) => {
+    const cardY =
+      cardsStartY + index * (cardHeight + 5);
+
+    doc
+      .roundedRect(
+        LEFT,
+        cardY,
+        CONTENT_WIDTH,
+        cardHeight,
+        6,
+      )
+      .fill(COLORS.white);
+
+    doc
+      .roundedRect(
+        LEFT,
+        cardY,
+        CONTENT_WIDTH,
+        cardHeight,
+        6,
+      )
+      .lineWidth(0.5)
+      .stroke(COLORS.border);
+
+    doc
+      .rect(
+        LEFT,
+        cardY,
+        4,
+        cardHeight,
+      )
+      .fill(COLORS.primary);
+
+    const circleSize =
+      cardHeight > 55 ? 9 : 6;
+
+    doc
+      .circle(
+        43,
+        cardY + cardHeight / 2,
+        circleSize,
+      )
+      .fill(COLORS.accentLight);
+
+    doc
+      .fillColor(COLORS.primary)
+      .font('Helvetica-Bold')
+      .fontSize(
+        cardHeight > 55 ? 6 : 4,
+      )
+      .text(
+        `${index + 1}`,
+        38,
+        cardY + cardHeight / 2 - 3,
+        {
+          width: 10,
+          align: 'center',
+        },
+      );
+
+    const topY = cardY + 7;
+
+    doc
+      .fillColor(COLORS.text)
+      .font('Helvetica-Bold')
+      .fontSize(titleFontSize)
+      .text(
+        c.item?.title || 'Unknown Item',
+        60,
+        topY,
+        {
+          width: 210,
+          height: 12,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        `Claim ID: ${c.id}   •   Item ID: ${c.itemId}`,
+        60,
+        topY + 12,
+        {
+          width: 250,
+          ellipsis: true,
+        },
+      );
+
+    const statusColors =
+      getStatusColors(c.status);
+
+    const badgeHeight =
+      Math.min(18, Math.max(14, cardHeight - 8));
+
+    doc
+      .roundedRect(
+        450,
+        topY,
+        90,
+        badgeHeight,
+        8,
+      )
+      .fill(statusColors.background);
+
+    doc
+      .fillColor(statusColors.text)
+      .font('Helvetica-Bold')
+      .fontSize(smallFontSize)
+      .text(
+        c.status || 'N/A',
+        450,
+        topY + 5,
+        {
+          width: 90,
+          align: 'center',
+        },
+      );
+
+    const detailsY =
+      cardY +
+      Math.min(
+        32,
+        Math.max(25, cardHeight * 0.38),
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica-Bold')
+      .fontSize(smallFontSize)
+      .text(
+        'CLAIMANT',
+        60,
+        detailsY,
+      );
+
+    doc
+      .fillColor(COLORS.text)
+      .font('Helvetica-Bold')
+      .fontSize(normalFontSize)
+      .text(
+        c.user?.name || 'N/A',
+        60,
+        detailsY + 8,
+        {
+          width: 145,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.textSecondary)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        c.user?.email || 'N/A',
+        60,
+        detailsY + 16,
+        {
+          width: 145,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica-Bold')
+      .fontSize(smallFontSize)
+      .text(
+        'FINDER / OWNER',
+        225,
+        detailsY,
+      );
+
+    doc
+      .fillColor(COLORS.text)
+      .font('Helvetica-Bold')
+      .fontSize(normalFontSize)
+      .text(
+        c.item?.user?.name || 'N/A',
+        225,
+        detailsY + 8,
+        {
+          width: 140,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.textSecondary)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        c.item?.user?.email || 'N/A',
+        225,
+        detailsY + 16,
+        {
+          width: 140,
+          ellipsis: true,
+        },
+      );
+
+    const datesY =
+      cardY + cardHeight - 19;
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        `Claimed: ${formatDate(c.createdAt)}`,
+        60,
+        datesY,
+        {
+          width: 110,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        `Verified: ${formatDate(c.verifiedAt)}`,
+        180,
+        datesY,
+        {
+          width: 110,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        `Arranged: ${formatDate(c.returnArrangedAt)}`,
+        300,
+        datesY,
+        {
+          width: 125,
+          ellipsis: true,
+        },
+      );
+
+    doc
+      .fillColor(COLORS.muted)
+      .font('Helvetica')
+      .fontSize(smallFontSize)
+      .text(
+        `Received: ${formatDate(c.receivedAt)}`,
+        435,
+        datesY,
+        {
+          width: 105,
+          ellipsis: true,
+        },
+      );
+  });
+
+  const footerY = PAGE_HEIGHT - 45;
+
+  doc
+    .moveTo(LEFT, footerY - 7)
+    .lineTo(RIGHT, footerY - 7)
+    .lineWidth(0.5)
+    .stroke(COLORS.border);
+
+  doc
+    .fillColor(COLORS.primary)
+    .font('Helvetica-Bold')
+    .fontSize(7)
+    .text(
+      'FindIt • Lost & Found Management System',
+      LEFT,
+      footerY,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica')
+    .fontSize(6)
+    .text(
+      'Need assistance? Contact FindIt Support',
+      LEFT,
+      footerY + 11,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica')
+    .fontSize(6)
+    .text(
+      'Email: support@findit.com  •  Website: FindIt Lost & Found Platform',
+      LEFT,
+      footerY + 21,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica')
+    .fontSize(6)
+    .text(
+      'This report is system-generated and intended for authorized use only.',
+      LEFT,
+      footerY + 32,
+    );
+
+  doc
+    .fillColor(COLORS.muted)
+    .font('Helvetica-Bold')
+    .fontSize(6)
+    .text(
+      'Page 1',
+      500,
+      footerY,
+      {
+        width: 70,
+        align: 'right',
+      },
+    );
+
+  doc.end();
+}}
