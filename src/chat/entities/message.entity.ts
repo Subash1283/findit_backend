@@ -25,6 +25,9 @@ export class Message {
   @Column()
   itemId: number;
 
+  @Column({ default: false })
+  isRead: boolean;
+
   @ManyToOne(() => User)
   @JoinColumn({ name: 'senderId' })
   sender: User;

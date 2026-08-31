@@ -18,7 +18,7 @@ import { ItemStatus, ItemType } from './entities/item.enum';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MailerService } from '../reset-password/mailer.service';
 import { VisionService } from '../module/ai/vision.service';
-import { ILike, Not } from 'typeorm';
+import { ILike, In, Not } from 'typeorm';
 
 import { Dispute } from './entities/dispute.entity';
 import { ClaimRequest, ClaimStatus } from './entities/claim-request.entity';
@@ -57,32 +57,70 @@ export class ItemsService {
     }));
   }
 
+  private static readonly LIVE_CLAIM_STATUSES = [
+    ClaimStatus.PENDING,
+    ClaimStatus.APPROVED,
+    ClaimStatus.RETURN_ARRANGED,
+    ClaimStatus.ITEM_RECEIVED,
+    ClaimStatus.RETURN_COMPLETED,
+  ];
+
   async findMine(userId: number): Promise<any[]> {
+    const myClaims = await this.claimRequestRepository.find({
+      where: { userId, status: In(ItemsService.LIVE_CLAIM_STATUSES) },
+      select: ['itemId'],
+    });
+    const claimedItemIds = [...new Set(myClaims.map((c) => c.itemId))];
+
     const items = await this.itemRepository.find({
-      where: { userId },
+      where: claimedItemIds.length
+        ? [{ userId }, { id: In(claimedItemIds) }]
+        : { userId },
       relations: ['user'],
       order: { createdAt: 'DESC' },
     });
 
-    const itemsWithClaims = await Promise.all(
-      items.map(async (item) => {
+    const uniqueItems = [...new Map(items.map((item) => [item.id, item])).values()];
+
+    return Promise.all(
+      uniqueItems.map(async (item) => {
         const claims = await this.claimRequestRepository.find({
           where: { itemId: item.id },
           relations: ['user'],
           order: { createdAt: 'DESC' },
         });
+        const liveClaims = claims.filter((c) =>
+          ItemsService.LIVE_CLAIM_STATUSES.includes(c.status),
+        );
+        const isOwner = Number(item.userId) === Number(userId);
+        const activeClaim = isOwner
+          ? liveClaims[0]
+          : liveClaims.find((c) => Number(c.userId) === Number(userId));
+
         return {
           ...item,
           images: [item.imageFront, item.imageBack].filter(Boolean),
-          claims,
-          activeClaim: claims.find((c) =>
-            ['APPROVED', 'RETURN_ARRANGED', 'ITEM_RECEIVED', 'RETURN_COMPLETED', 'PENDING'].includes(c.status),
-          ),
+          claims: isOwner ? claims : claims.filter((c) => Number(c.userId) === Number(userId)),
+          activeClaim: activeClaim || null,
         };
       }),
     );
+  }
 
-    return itemsWithClaims;
+  async getActiveClaimForUser(itemId: number, userId: number): Promise<ClaimRequest | null> {
+    const item = await this.itemRepository.findOne({ where: { id: itemId } });
+    if (!item) throw new NotFoundException('Item not found');
+
+    const isOwner = Number(item.userId) === Number(userId);
+    const matches = await this.claimRequestRepository.find({
+      where: isOwner
+        ? { itemId, status: In(ItemsService.LIVE_CLAIM_STATUSES) }
+        : { itemId, userId, status: In(ItemsService.LIVE_CLAIM_STATUSES) },
+      relations: ['user'],
+      order: { createdAt: 'DESC' },
+      take: 1,
+    });
+    return matches[0] || null;
   }
 
   async getHeatmapData(): Promise<{ latitude: number; longitude: number }[]> {
@@ -928,11 +966,11 @@ export class ItemsService {
       `/dashboard/tracking/${savedClaimRequest.id}`,
     );
 
-    // Notify the item owner
+    // Notify the item owner — send them to manage claim requests, not inbox
     await this.notificationsService.create(
       item.userId,
       `User ${user.name} has requested to claim your item: "${item.title}".`,
-      `/dashboard/inbox`
+      `/dashboard/item/${item.id}/claims`,
     );
 
     return { message: 'Claim request submitted successfully.' };
@@ -1100,12 +1138,26 @@ export class ItemsService {
       item.claimedById = claimRequest.userId;
       await this.itemRepository.save(item);
 
+      await this.chatService.ensureAcceptedConversation(
+        item.id,
+        item.userId,
+        claimRequest.userId,
+      );
+
       // Notify claimant: Claim Verified
       await this.notificationsService.create(
         claimRequest.userId,
-        `Your claim has been verified. You can now contact the finder. Verification Code: ${verificationCode}`,
-        `/dashboard/tracking/${claimRequest.id}`
+        `Your claim for "${item.title}" is now Claimed. Verification Code: ${verificationCode}. Track the return anytime.`,
+        `/dashboard/tracking/${claimRequest.id}`,
       );
+
+      if (Number(item.userId) !== Number(claimRequest.userId)) {
+        await this.notificationsService.create(
+          item.userId,
+          `"${item.title}" is now Claimed. Track the handover from In Transit / Claimed.`,
+          `/dashboard/tracking/${claimRequest.id}`,
+        );
+      }
 
       return { message: 'Claim verified successfully.' };
     }
@@ -1283,11 +1335,9 @@ export class ItemsService {
     if (!claim) throw new NotFoundException('Claim not found');
 
     const user = await this.usersService.findOne(userId);
-    const isClaimant = claim.userId === userId;
-    const isOwner = claim.item.userId === userId;
-    const isAdmin = user?.role === Role.ADMIN;
+    const roles = this.getTrackingRoles(claim, userId, user?.role);
 
-    if (!isClaimant && !isOwner && !isAdmin) {
+    if (!roles.isClaimant && !roles.isPoster && !roles.isAdmin) {
       throw new ForbiddenException('Not authorized to view this claim tracking page');
     }
 
@@ -1300,10 +1350,80 @@ export class ItemsService {
     return {
       claim,
       history,
-      isClaimant,
-      isOwner,
-      isAdmin,
+      ...roles,
     };
+  }
+
+  private getTrackingRoles(claim: ClaimRequest, userId: number, role?: Role) {
+    const isClaimant = Number(claim.userId) === Number(userId);
+    const isPoster = Number(claim.item?.userId) === Number(userId);
+    const isAdmin = role === Role.ADMIN;
+    const isFoundItem = claim.item?.type === ItemType.FOUND;
+    const isFinder = isFoundItem ? isPoster : isClaimant;
+    const isPropertyOwner = isFoundItem ? isClaimant : isPoster;
+    return { isClaimant, isPoster, isAdmin, isFinder, isPropertyOwner };
+  }
+
+  async adminSetTrackingStatus(
+    claimId: number,
+    adminId: number,
+    status: ClaimStatus,
+  ): Promise<{ message: string; claim: ClaimRequest }> {
+    const allowed = [
+      ClaimStatus.APPROVED,
+      ClaimStatus.RETURN_ARRANGED,
+      ClaimStatus.ITEM_RECEIVED,
+      ClaimStatus.RETURN_COMPLETED,
+    ];
+    if (!allowed.includes(status)) {
+      throw new BadRequestException('Admin can only set handover statuses (Claimed, In Transit, Received, Delivered)');
+    }
+
+    const claim = await this.claimRequestRepository.findOne({
+      where: { id: claimId },
+      relations: ['item', 'user', 'item.user'],
+    });
+    if (!claim) throw new NotFoundException('Claim not found');
+
+    const now = new Date();
+    claim.status = status;
+    if (status === ClaimStatus.APPROVED && !claim.verifiedAt) claim.verifiedAt = now;
+    if (status === ClaimStatus.RETURN_ARRANGED) claim.returnArrangedAt = now;
+    if (status === ClaimStatus.ITEM_RECEIVED) claim.receivedAt = now;
+    if (status === ClaimStatus.RETURN_COMPLETED) {
+      claim.receivedAt = claim.receivedAt || now;
+      claim.completedAt = now;
+      if (claim.item) {
+        claim.item.status = ItemStatus.SOLVED;
+        await this.itemRepository.save(claim.item);
+      }
+    }
+    if (status === ClaimStatus.RETURN_ARRANGED && claim.item) {
+      claim.item.status = ItemStatus.CLAIMED;
+      await this.itemRepository.save(claim.item);
+    }
+
+    await this.claimRequestRepository.save(claim);
+    await this.logClaimStatusHistory(claim.id, status, adminId, 'Status updated by admin');
+
+    const trackingLink = `/dashboard/tracking/${claim.id}`;
+    const label =
+      status === ClaimStatus.RETURN_ARRANGED
+        ? 'In Transit'
+        : status === ClaimStatus.ITEM_RECEIVED
+        ? 'Received'
+        : status === ClaimStatus.RETURN_COMPLETED
+        ? 'Delivered'
+        : 'Claimed';
+    const message = `"${claim.item?.title || 'Item'}" status is now ${label}. Track it from In Transit / Claimed.`;
+    const notifyIds = [claim.item?.userId, claim.userId].filter(
+      (id, index, arr) => id && arr.indexOf(id) === index,
+    );
+    for (const notifyId of notifyIds) {
+      await this.notificationsService.create(notifyId, message, trackingLink);
+    }
+
+    return { message: `Status updated to ${label}.`, claim };
   }
 
   async markReturnArranged(claimId: number, userId: number): Promise<{ message: string; claim: ClaimRequest }> {
@@ -1315,12 +1435,10 @@ export class ItemsService {
     if (!claim) throw new NotFoundException('Claim not found');
 
     const user = await this.usersService.findOne(userId);
-    const isClaimant = claim.userId === userId;
-    const isOwner = claim.item.userId === userId;
-    const isAdmin = user?.role === Role.ADMIN;
+    const roles = this.getTrackingRoles(claim, userId, user?.role);
 
-    if (!isClaimant && !isOwner && !isAdmin) {
-      throw new ForbiddenException('Only the claimant, item owner, or admin can mark return as arranged');
+    if (!roles.isFinder && !roles.isAdmin) {
+      throw new ForbiddenException('Only the finder or an admin can mark this item as In Transit');
     }
 
     if (claim.status !== ClaimStatus.APPROVED) {
@@ -1339,13 +1457,14 @@ export class ItemsService {
       'Return Arranged',
     );
 
-    // Notify the other user
-    const otherUserId = isClaimant ? claim.item.userId : claim.userId;
-    await this.notificationsService.create(
-      otherUserId,
-      'The return of your item has been arranged.',
-      `/dashboard/tracking/${claim.id}`,
+    const trackingLink = `/dashboard/tracking/${claim.id}`;
+    const inTransitMessage = `"${claim.item.title}" is now In Transit. Open tracking to follow the handover.`;
+    const notifyIds = [claim.item.userId, claim.userId].filter(
+      (id, index, arr) => id && arr.indexOf(id) === index,
     );
+    for (const notifyId of notifyIds) {
+      await this.notificationsService.create(notifyId, inTransitMessage, trackingLink);
+    }
 
     return { message: 'Return has been marked as arranged.', claim };
   }
@@ -1359,12 +1478,10 @@ export class ItemsService {
     if (!claim) throw new NotFoundException('Claim not found');
 
     const user = await this.usersService.findOne(userId);
-    const isClaimant = claim.userId === userId;
-    const isAdmin = user?.role === Role.ADMIN;
+    const roles = this.getTrackingRoles(claim, userId, user?.role);
 
-    // RULE 6: Prevent False Completion - Backend Authorization
-    if (!isClaimant && !isAdmin) {
-      throw new ForbiddenException('Only the verified claimant/owner associated with this claim can confirm item receipt');
+    if (!roles.isPropertyOwner && !roles.isAdmin) {
+      throw new ForbiddenException('Only the item owner or an admin can confirm the item was received');
     }
 
     if (
@@ -1425,7 +1542,7 @@ export class ItemsService {
     }
 
     return {
-      message: '🎉 Item Successfully Returned! Your item has been successfully returned.',
+      message: 'Item Successfully Returned! Your item has been successfully returned.',
       claim,
     };
   }

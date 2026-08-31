@@ -76,6 +76,58 @@ export class ItemsController {
     return this.itemsService.getAllClaims();
   }
 
+  @Get('claim-requests/:claimId/tracking')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  getClaimTracking(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.getClaimTrackingInfo(claimId, req.user.id);
+  }
+
+  @Patch('claim-requests/:claimId/arrange-return')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  markReturnArranged(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.markReturnArranged(claimId, req.user.id);
+  }
+
+  @Patch('claim-requests/:claimId/receive')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  markItemReceived(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.markItemReceived(claimId, req.user.id);
+  }
+
+  @Patch('admin/claims/:claimId/status')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  adminSetTrackingStatus(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Body('status') status: ClaimStatus,
+    @Req() req: any,
+  ) {
+    if (req.user.role !== 'admin') throw new ForbiddenException('Admin only');
+    return this.itemsService.adminSetTrackingStatus(claimId, req.user.id, status);
+  }
+
+  @Get(':id/active-claim')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  getActiveClaim(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.getActiveClaimForUser(id, req.user.id);
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.itemsService.findOne(id);
@@ -203,36 +255,6 @@ export class ItemsController {
       throw new BadRequestException('Reason is required');
     }
     return this.itemsService.createDispute(req.user.id, id, reason);
-  }
-
-  @Get('claim-requests/:claimId/tracking')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('access-token')
-  getClaimTracking(
-    @Param('claimId', ParseIntPipe) claimId: number,
-    @Req() req: any,
-  ) {
-    return this.itemsService.getClaimTrackingInfo(claimId, req.user.id);
-  }
-
-  @Patch('claim-requests/:claimId/arrange-return')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('access-token')
-  markReturnArranged(
-    @Param('claimId', ParseIntPipe) claimId: number,
-    @Req() req: any,
-  ) {
-    return this.itemsService.markReturnArranged(claimId, req.user.id);
-  }
-
-  @Patch('claim-requests/:claimId/receive')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('access-token')
-  markItemReceived(
-    @Param('claimId', ParseIntPipe) claimId: number,
-    @Req() req: any,
-  ) {
-    return this.itemsService.markItemReceived(claimId, req.user.id);
   }
 
   @Get('admin/returns/pdf')

@@ -50,6 +50,7 @@ export class ChatService {
       itemId,
       content: encryptedContent,
       imageUrl,
+      isRead: false,
     });
     const savedMessage = await this.messageRepository.save(message);
     const completeMessage = await this.messageRepository.findOne({
@@ -69,7 +70,16 @@ export class ChatService {
     return null;
   }
 
+  async markConversationRead(itemId: number, readerId: number, otherUserId: number): Promise<void> {
+    await this.messageRepository.update(
+      { itemId, senderId: otherUserId, receiverId: readerId, isRead: false },
+      { isRead: true },
+    );
+  }
+
   async getMessages(itemId: number, userId1: number, userId2: number): Promise<{ messages: Message[], conversation: Conversation }> {
+    await this.markConversationRead(itemId, userId1, userId2);
+
     const messages = await this.messageRepository.find({
       where: [
         { itemId, senderId: userId1, receiverId: userId2 },
@@ -121,12 +131,34 @@ export class ChatService {
           item: msg.item,
           otherUser,
           lastMessage: msg.content,
+          lastMessageIsRead: !!msg.isRead,
+          lastMessageSenderId: msg.senderId,
+          hasUnread: Number(msg.senderId) !== Number(userId) && !msg.isRead,
           updatedAt: msg.createdAt,
           conversation: convStatus
         });
       }
     }
     return Array.from(conversations.values());
+  }
+
+  async ensureAcceptedConversation(
+    itemId: number,
+    ownerId: number,
+    claimantId: number,
+  ): Promise<Conversation> {
+    let conversation = await this.getConversation(itemId, ownerId, claimantId);
+    if (!conversation) {
+      conversation = this.conversationRepository.create({
+        itemId,
+        initiatorId: claimantId,
+        ownerId,
+        status: 'accepted',
+      });
+      return this.conversationRepository.save(conversation);
+    }
+    conversation.status = 'accepted';
+    return this.conversationRepository.save(conversation);
   }
 
   async deleteConversation(itemId: number, userId1: number, userId2: number) {

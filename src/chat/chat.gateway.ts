@@ -75,6 +75,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         data.otherUserId,
       );
       client.emit('chatHistory', history);
+      const inbox = await this.chatService.getUserInbox(userId);
+      client.emit('inboxData', inbox);
     } catch (err) {
       client.emit('chatError', { message: 'Failed to fetch history' });
     }
