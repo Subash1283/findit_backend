@@ -65,6 +65,9 @@ export class ItemsService {
     ClaimStatus.RETURN_COMPLETED,
   ];
 
+  private static readonly AUTO_REJECT_NOTE =
+    'Auto-rejected because another claim was verified';
+
   async findMine(userId: number): Promise<any[]> {
     const myClaims = await this.claimRequestRepository.find({
       where: { userId, status: In(ItemsService.LIVE_CLAIM_STATUSES) },
@@ -1034,11 +1037,11 @@ export class ItemsService {
         claimRequest.status !== ClaimStatus.APPROVED &&
         claimRequest.status !== ClaimStatus.RETURN_ARRANGED
       ) {
-        throw new BadRequestException('Only approved or arranged claims can be revoked');
+        throw new BadRequestException('Only approved or in-transit claims can be revoked');
       }
 
       claimRequest.status = ClaimStatus.REVOKED;
-      claimRequest.verificationCode = null;
+      claimRequest.verificationCode = null as unknown as string;
       await this.claimRequestRepository.save(claimRequest);
 
       await this.logClaimStatusHistory(
@@ -1054,16 +1057,40 @@ export class ItemsService {
       item.claimedById = null;
       await this.itemRepository.save(item);
 
-      // Delete all chat messages between the owner and the claimant for this item
-      await this.chatService.deleteConversation(item.id, claimRequest.item.userId, claimRequest.userId);
+      try {
+        await this.chatService.deleteConversation(item.id, item.userId, claimRequest.userId);
+      } catch {
+        // Chat cleanup should not block the revoke
+      }
 
       await this.notificationsService.create(
         claimRequest.userId,
-        `Your approved claim for "${item.title}" has been revoked.`,
-        `/items/${item.id}`
+        `Your approved claim for "${item.title}" has been revoked. The item is available for other claimers.`,
+        `/items/${item.id}`,
       );
 
-      return { message: 'Claim revoked successfully. The item is now available for new claimers.' };
+      if (Number(item.userId) !== Number(responderId)) {
+        await this.notificationsService.create(
+          item.userId,
+          `The approved claim for "${item.title}" was revoked. Other users can claim it again.`,
+          `/dashboard/item/${item.id}/claims`,
+        );
+      }
+
+      // Re-open claims that were auto-rejected when this one was approved
+      const restoredCount = await this.restoreAutoRejectedClaims(
+        item.id,
+        claimRequest.id,
+        responderId,
+        item.title,
+      );
+
+      const restoredNote =
+        restoredCount > 0
+          ? ` ${restoredCount} other claim request${restoredCount === 1 ? '' : 's'} ${restoredCount === 1 ? 'is' : 'are'} pending again.`
+          : ' Other users can now submit a new claim request.';
+
+      return { message: `Claim revoked successfully. The item is now available.${restoredNote}` };
     }
 
     // ── Approve / Reject — only allowed on PENDING claims ─────────────────
@@ -1123,7 +1150,7 @@ export class ItemsService {
           pending.id,
           ClaimStatus.REJECTED,
           responderId,
-          'Auto-rejected because another claim was verified',
+          ItemsService.AUTO_REJECT_NOTE,
         );
         await this.notificationsService.create(
           pending.userId,
@@ -1163,6 +1190,47 @@ export class ItemsService {
     }
 
     throw new BadRequestException('Invalid status');
+  }
+
+  private async restoreAutoRejectedClaims(
+    itemId: number,
+    revokedClaimId: number,
+    responderId: number,
+    itemTitle: string,
+  ): Promise<number> {
+    const rejectedOthers = await this.claimRequestRepository.find({
+      where: {
+        itemId,
+        status: ClaimStatus.REJECTED,
+        id: Not(revokedClaimId),
+      },
+    });
+
+    let restored = 0;
+    for (const other of rejectedOthers) {
+      const latest = await this.claimStatusHistoryRepository.findOne({
+        where: { claimId: other.id },
+        order: { createdAt: 'DESC' },
+      });
+      if (latest?.note !== ItemsService.AUTO_REJECT_NOTE) continue;
+
+      other.status = ClaimStatus.PENDING;
+      await this.claimRequestRepository.save(other);
+      await this.logClaimStatusHistory(
+        other.id,
+        ClaimStatus.PENDING,
+        responderId,
+        'Reopened because the approved claim was revoked',
+      );
+      await this.notificationsService.create(
+        other.userId,
+        `The previous claim on "${itemTitle}" was revoked. Your claim request is pending again.`,
+        `/items/${itemId}`,
+      );
+      restored += 1;
+    }
+
+    return restored;
   }
 
   /**
@@ -1304,6 +1372,23 @@ export class ItemsService {
     if (adminResponse) dispute.adminResponse = adminResponse;
 
     const saved = await this.disputeRepository.save(dispute);
+
+    if (status === 'resolved' && dispute.item) {
+      const liveClaim = await this.claimRequestRepository.findOne({
+        where: {
+          itemId: dispute.item.id,
+          status: In([
+            ClaimStatus.APPROVED,
+            ClaimStatus.RETURN_ARRANGED,
+            ClaimStatus.ITEM_RECEIVED,
+          ]),
+        },
+      });
+      if (!liveClaim && dispute.item.status === ItemStatus.DISPUTED) {
+        dispute.item.status = ItemStatus.ACTIVE;
+        await this.itemRepository.save(dispute.item);
+      }
+    }
 
     // Notify the reporter that their dispute has been reviewed
     if (dispute.reporter?.id) {
