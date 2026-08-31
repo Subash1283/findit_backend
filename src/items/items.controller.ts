@@ -15,6 +15,8 @@ import {
   ParseIntPipe,
   ForbiddenException,
   BadRequestException,
+  Res,
+  Query,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ItemsService } from './items.service';
@@ -202,4 +204,49 @@ export class ItemsController {
     }
     return this.itemsService.createDispute(req.user.id, id, reason);
   }
+
+  @Get('claim-requests/:claimId/tracking')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  getClaimTracking(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.getClaimTrackingInfo(claimId, req.user.id);
+  }
+
+  @Patch('claim-requests/:claimId/arrange-return')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  markReturnArranged(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.markReturnArranged(claimId, req.user.id);
+  }
+
+  @Patch('claim-requests/:claimId/receive')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  markItemReceived(
+    @Param('claimId', ParseIntPipe) claimId: number,
+    @Req() req: any,
+  ) {
+    return this.itemsService.markItemReceived(claimId, req.user.id);
+  }
+
+  @Get('admin/returns/pdf')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  async downloadReturnedItemsPdf(
+    @Req() req: any,
+    @Res() res: any,
+    @Query('status') status?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    if (req.user.role !== 'admin') throw new ForbiddenException('Admin only');
+    return this.itemsService.generateReturnedItemsPdf(res, status, startDate, endDate);
+  }
 }
+

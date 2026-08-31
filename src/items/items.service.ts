@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import * as fs from 'fs';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -21,6 +22,7 @@ import { ILike, Not } from 'typeorm';
 
 import { Dispute } from './entities/dispute.entity';
 import { ClaimRequest, ClaimStatus } from './entities/claim-request.entity';
+import { ClaimStatusHistory } from './entities/claim-status-history.entity';
 import { ChatService } from '../chat/chat.service';
 
 @Injectable()
@@ -32,6 +34,8 @@ export class ItemsService {
     private disputeRepository: Repository<Dispute>,
     @InjectRepository(ClaimRequest)
     private claimRequestRepository: Repository<ClaimRequest>,
+    @InjectRepository(ClaimStatusHistory)
+    private claimStatusHistoryRepository: Repository<ClaimStatusHistory>,
     private usersService: UsersService,
     private notificationsService: NotificationsService,
     private mailerService: MailerService,
@@ -60,10 +64,25 @@ export class ItemsService {
       order: { createdAt: 'DESC' },
     });
 
-    return items.map((item) => ({
-      ...item,
-      images: [item.imageFront, item.imageBack].filter(Boolean),
-    }));
+    const itemsWithClaims = await Promise.all(
+      items.map(async (item) => {
+        const claims = await this.claimRequestRepository.find({
+          where: { itemId: item.id },
+          relations: ['user'],
+          order: { createdAt: 'DESC' },
+        });
+        return {
+          ...item,
+          images: [item.imageFront, item.imageBack].filter(Boolean),
+          claims,
+          activeClaim: claims.find((c) =>
+            ['APPROVED', 'RETURN_ARRANGED', 'ITEM_RECEIVED', 'RETURN_COMPLETED', 'PENDING'].includes(c.status),
+          ),
+        };
+      }),
+    );
+
+    return itemsWithClaims;
   }
 
   async getHeatmapData(): Promise<{ latitude: number; longitude: number }[]> {
@@ -892,7 +911,22 @@ export class ItemsService {
       proofMessage,
       status: ClaimStatus.PENDING,
     });
-    await this.claimRequestRepository.save(claimRequest);
+    const savedClaimRequest = await this.claimRequestRepository.save(claimRequest);
+
+    // Log history: Claim Submitted
+    await this.logClaimStatusHistory(
+      savedClaimRequest.id,
+      ClaimStatus.PENDING,
+      userId,
+      'Claim Submitted',
+    );
+
+    // Notify claimant
+    await this.notificationsService.create(
+      userId,
+      'Your claim has been submitted successfully.',
+      `/dashboard/tracking/${savedClaimRequest.id}`,
+    );
 
     // Notify the item owner
     await this.notificationsService.create(
@@ -904,12 +938,29 @@ export class ItemsService {
     return { message: 'Claim request submitted successfully.' };
   }
 
+  async logClaimStatusHistory(
+    claimId: number,
+    status: string,
+    changedById: number,
+    note?: string,
+  ) {
+    const history = this.claimStatusHistoryRepository.create({
+      claimId,
+      status,
+      changedById,
+      note,
+    });
+    return this.claimStatusHistoryRepository.save(history);
+  }
+
   async getClaimRequests(itemId: number, userId: number): Promise<ClaimRequest[]> {
     const item = await this.itemRepository.findOne({ where: { id: itemId } });
     if (!item) throw new NotFoundException('Item not found');
 
-    if (item.userId !== userId) {
-      throw new BadRequestException('Only the item owner can view claim requests');
+    const user = await this.usersService.findOne(userId);
+
+    if (item.userId !== userId && user?.role !== Role.ADMIN) {
+      throw new BadRequestException('Only the item owner or admin can view claim requests');
     }
 
     return this.claimRequestRepository.find({
@@ -919,7 +970,11 @@ export class ItemsService {
     });
   }
 
-  async respondToClaimRequest(requestId: number, ownerId: number, status: ClaimStatus): Promise<{ message: string }> {
+  async respondToClaimRequest(
+    requestId: number,
+    responderId: number,
+    status: ClaimStatus,
+  ): Promise<{ message: string }> {
     const claimRequest = await this.claimRequestRepository.findOne({
       where: { id: requestId },
       relations: ['item', 'user'],
@@ -927,19 +982,33 @@ export class ItemsService {
 
     if (!claimRequest) throw new NotFoundException('Claim request not found');
 
-    if (claimRequest.item.userId !== ownerId) {
-      throw new BadRequestException('Only the item owner can respond to claim requests');
+    const responder = await this.usersService.findOne(responderId);
+    const isOwner = claimRequest.item.userId === responderId;
+    const isAdmin = responder?.role === Role.ADMIN;
+
+    if (!isOwner && !isAdmin) {
+      throw new BadRequestException('Only the item owner or an admin can respond to claim requests');
     }
 
     // ── Revoke an already-approved claim ──────────────────────────────────
     if (status === ClaimStatus.REVOKED) {
-      if (claimRequest.status !== ClaimStatus.APPROVED) {
-        throw new BadRequestException('Only approved claims can be revoked');
+      if (
+        claimRequest.status !== ClaimStatus.APPROVED &&
+        claimRequest.status !== ClaimStatus.RETURN_ARRANGED
+      ) {
+        throw new BadRequestException('Only approved or arranged claims can be revoked');
       }
 
       claimRequest.status = ClaimStatus.REVOKED;
       claimRequest.verificationCode = null;
       await this.claimRequestRepository.save(claimRequest);
+
+      await this.logClaimStatusHistory(
+        claimRequest.id,
+        ClaimStatus.REVOKED,
+        responderId,
+        isAdmin ? 'Revoked by Admin' : 'Revoked by Owner',
+      );
 
       // Reset the item back to active so a new claim can be made
       const item = claimRequest.item;
@@ -947,12 +1016,12 @@ export class ItemsService {
       item.claimedById = null;
       await this.itemRepository.save(item);
 
-      // Delete all chat messages between the owner and the faker for this item
-      await this.chatService.deleteConversation(item.id, ownerId, claimRequest.userId);
+      // Delete all chat messages between the owner and the claimant for this item
+      await this.chatService.deleteConversation(item.id, claimRequest.item.userId, claimRequest.userId);
 
       await this.notificationsService.create(
         claimRequest.userId,
-        `Your approved claim for "${item.title}" has been revoked by the owner.`,
+        `Your approved claim for "${item.title}" has been revoked.`,
         `/items/${item.id}`
       );
 
@@ -968,6 +1037,13 @@ export class ItemsService {
       claimRequest.status = ClaimStatus.REJECTED;
       await this.claimRequestRepository.save(claimRequest);
 
+      await this.logClaimStatusHistory(
+        claimRequest.id,
+        ClaimStatus.REJECTED,
+        responderId,
+        isAdmin ? 'Rejected by Admin' : 'Rejected by Owner',
+      );
+
       await this.notificationsService.create(
         claimRequest.userId,
         `Your claim request for "${claimRequest.item.title}" was rejected.`,
@@ -977,12 +1053,24 @@ export class ItemsService {
     }
 
     if (status === ClaimStatus.APPROVED) {
+      const now = new Date();
       claimRequest.status = ClaimStatus.APPROVED;
+      claimRequest.verifiedAt = now;
+      if (isAdmin) {
+        claimRequest.adminId = responderId;
+      }
       
       // Generate verification code
       const verificationCode = `FINDIT-${Math.floor(1000 + Math.random() * 9000)}`;
       claimRequest.verificationCode = verificationCode;
       await this.claimRequestRepository.save(claimRequest);
+
+      await this.logClaimStatusHistory(
+        claimRequest.id,
+        ClaimStatus.APPROVED,
+        responderId,
+        isAdmin ? 'Claim Verified by Admin' : 'Claim Verified by Owner',
+      );
 
       // Reject all other pending claims for this item
       const otherPendingClaims = await this.claimRequestRepository.find({
@@ -990,11 +1078,18 @@ export class ItemsService {
       });
 
       for (const pending of otherPendingClaims) {
+        if (pending.id === claimRequest.id) continue;
         pending.status = ClaimStatus.REJECTED;
         await this.claimRequestRepository.save(pending);
+        await this.logClaimStatusHistory(
+          pending.id,
+          ClaimStatus.REJECTED,
+          responderId,
+          'Auto-rejected because another claim was verified',
+        );
         await this.notificationsService.create(
           pending.userId,
-          `Your claim request for "${claimRequest.item.title}" was rejected because another claim was approved.`,
+          `Your claim request for "${claimRequest.item.title}" was rejected because another claim was verified.`,
           `/items/${claimRequest.item.id}`
         );
       }
@@ -1005,14 +1100,14 @@ export class ItemsService {
       item.claimedById = claimRequest.userId;
       await this.itemRepository.save(item);
 
-      // Notify the approved user
+      // Notify claimant: Claim Verified
       await this.notificationsService.create(
         claimRequest.userId,
-        `Your claim request for "${item.title}" was APPROVED! Your verification code is ${verificationCode}.`,
-        `/dashboard/inbox`
+        `Your claim has been verified. You can now contact the finder. Verification Code: ${verificationCode}`,
+        `/dashboard/tracking/${claimRequest.id}`
       );
 
-      return { message: 'Claim request approved successfully.' };
+      return { message: 'Claim verified successfully.' };
     }
 
     throw new BadRequestException('Invalid status');
@@ -1179,4 +1274,225 @@ export class ItemsService {
     });
   }
 
+  async getClaimTrackingInfo(claimId: number, userId: number) {
+    const claim = await this.claimRequestRepository.findOne({
+      where: { id: claimId },
+      relations: ['item', 'item.user', 'user'],
+    });
+
+    if (!claim) throw new NotFoundException('Claim not found');
+
+    const user = await this.usersService.findOne(userId);
+    const isClaimant = claim.userId === userId;
+    const isOwner = claim.item.userId === userId;
+    const isAdmin = user?.role === Role.ADMIN;
+
+    if (!isClaimant && !isOwner && !isAdmin) {
+      throw new ForbiddenException('Not authorized to view this claim tracking page');
+    }
+
+    const history = await this.claimStatusHistoryRepository.find({
+      where: { claimId },
+      relations: ['changedBy'],
+      order: { createdAt: 'ASC' },
+    });
+
+    return {
+      claim,
+      history,
+      isClaimant,
+      isOwner,
+      isAdmin,
+    };
+  }
+
+  async markReturnArranged(claimId: number, userId: number): Promise<{ message: string; claim: ClaimRequest }> {
+    const claim = await this.claimRequestRepository.findOne({
+      where: { id: claimId },
+      relations: ['item', 'user', 'item.user'],
+    });
+
+    if (!claim) throw new NotFoundException('Claim not found');
+
+    const user = await this.usersService.findOne(userId);
+    const isClaimant = claim.userId === userId;
+    const isOwner = claim.item.userId === userId;
+    const isAdmin = user?.role === Role.ADMIN;
+
+    if (!isClaimant && !isOwner && !isAdmin) {
+      throw new ForbiddenException('Only the claimant, item owner, or admin can mark return as arranged');
+    }
+
+    if (claim.status !== ClaimStatus.APPROVED) {
+      throw new BadRequestException('Claim must be in "Claim Verified" (APPROVED) status to arrange return');
+    }
+
+    const now = new Date();
+    claim.status = ClaimStatus.RETURN_ARRANGED;
+    claim.returnArrangedAt = now;
+    await this.claimRequestRepository.save(claim);
+
+    await this.logClaimStatusHistory(
+      claim.id,
+      ClaimStatus.RETURN_ARRANGED,
+      userId,
+      'Return Arranged',
+    );
+
+    // Notify the other user
+    const otherUserId = isClaimant ? claim.item.userId : claim.userId;
+    await this.notificationsService.create(
+      otherUserId,
+      'The return of your item has been arranged.',
+      `/dashboard/tracking/${claim.id}`,
+    );
+
+    return { message: 'Return has been marked as arranged.', claim };
+  }
+
+  async markItemReceived(claimId: number, userId: number): Promise<{ message: string; claim: ClaimRequest }> {
+    const claim = await this.claimRequestRepository.findOne({
+      where: { id: claimId },
+      relations: ['item', 'user', 'item.user'],
+    });
+
+    if (!claim) throw new NotFoundException('Claim not found');
+
+    const user = await this.usersService.findOne(userId);
+    const isClaimant = claim.userId === userId;
+    const isAdmin = user?.role === Role.ADMIN;
+
+    // RULE 6: Prevent False Completion - Backend Authorization
+    if (!isClaimant && !isAdmin) {
+      throw new ForbiddenException('Only the verified claimant/owner associated with this claim can confirm item receipt');
+    }
+
+    if (
+      claim.status !== ClaimStatus.APPROVED &&
+      claim.status !== ClaimStatus.RETURN_ARRANGED
+    ) {
+      throw new BadRequestException('Cannot mark item as received for this claim status');
+    }
+
+    const now = new Date();
+    claim.status = ClaimStatus.RETURN_COMPLETED;
+    claim.receivedAt = now;
+    claim.completedAt = now;
+    await this.claimRequestRepository.save(claim);
+
+    // Record history for ITEM_RECEIVED and RETURN_COMPLETED
+    await this.logClaimStatusHistory(
+      claim.id,
+      ClaimStatus.ITEM_RECEIVED,
+      userId,
+      'Item Received by Claimant',
+    );
+    await this.logClaimStatusHistory(
+      claim.id,
+      ClaimStatus.RETURN_COMPLETED,
+      userId,
+      'Return Completed Successfully',
+    );
+
+    // Mark item as successfully returned
+    const item = claim.item;
+    item.status = ItemStatus.SOLVED;
+    await this.itemRepository.save(item);
+
+    // Notify Finder / Item Owner
+    await this.notificationsService.create(
+      item.userId,
+      `Great news! "${item.title}" has been successfully received by the owner. The return process is completed.`,
+      `/dashboard/tracking/${claim.id}`,
+    );
+
+    // Notify Claimant
+    await this.notificationsService.create(
+      claim.userId,
+      'The item has been successfully received. Return process completed!',
+      `/dashboard/tracking/${claim.id}`,
+    );
+
+    // Notify Admins
+    const admins = await this.usersService.findAdmins();
+    for (const admin of admins) {
+      await this.notificationsService.create(
+        admin.id,
+        `Return completed for Item "${item.title}" (Claim #${claim.id}).`,
+        `/dashboard/admin`,
+        'announcement',
+      );
+    }
+
+    return {
+      message: '🎉 Item Successfully Returned! Your item has been successfully returned.',
+      claim,
+    };
+  }
+
+  async generateReturnedItemsPdf(res: any, statusFilter?: string, startDate?: string, endDate?: string) {
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ margin: 30, size: 'A4' });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="returned-items-report.pdf"');
+
+    doc.pipe(res);
+
+    // Header
+    doc.fillColor('#0c1a3a').fontSize(22).text('FindIt - Returned Items & Claims Report', { align: 'center' });
+    doc.moveDown(0.5);
+    doc.fillColor('#64748b').fontSize(10).text(`Generated on: ${new Date().toLocaleString()}`, { align: 'center' });
+    doc.moveDown(1);
+
+    const queryBuilder = this.claimRequestRepository.createQueryBuilder('claim')
+      .leftJoinAndSelect('claim.item', 'item')
+      .leftJoinAndSelect('claim.user', 'claimant')
+      .leftJoinAndSelect('item.user', 'finder')
+      .orderBy('claim.createdAt', 'DESC');
+
+    if (statusFilter && statusFilter !== 'all') {
+      queryBuilder.andWhere('claim.status = :status', { status: statusFilter.toUpperCase() });
+    }
+
+    if (startDate) {
+      queryBuilder.andWhere('claim.createdAt >= :startDate', { startDate: new Date(startDate) });
+    }
+
+    if (endDate) {
+      queryBuilder.andWhere('claim.createdAt <= :endDate', { endDate: new Date(endDate) });
+    }
+
+    const claims = await queryBuilder.getMany();
+
+    doc.fillColor('#0f172a').fontSize(12).text(`Total Claims Found: ${claims.length}`, { underline: true });
+    doc.moveDown(1);
+
+    claims.forEach((c, index) => {
+      if (doc.y > 700) {
+        doc.addPage();
+      }
+
+      doc.rect(30, doc.y, 535, 105).fillAndStroke('#f8fafc', '#e2e8f0');
+      const startY = doc.y + 8;
+
+      doc.fillColor('#0c1a3a').fontSize(11).text(`#${index + 1} | Claim ID: ${c.id} | Item: ${c.item?.title || 'Unknown'} (Item ID: ${c.itemId})`, 40, startY, { bold: true });
+      
+      doc.fillColor('#334155').fontSize(9).text(`Claimant: ${c.user?.name || 'N/A'} (${c.user?.email || 'N/A'})`, 40, startY + 18);
+      doc.fillColor('#334155').fontSize(9).text(`Finder/Owner: ${c.item?.user?.name || 'N/A'} (${c.item?.user?.email || 'N/A'})`, 280, startY + 18);
+
+      doc.fillColor('#0284c7').fontSize(9).text(`Claim Status: ${c.status}`, 40, startY + 34);
+      doc.fillColor('#16a34a').fontSize(9).text(`Item Status: ${c.item?.status || 'N/A'}`, 280, startY + 34);
+
+      doc.fillColor('#64748b').fontSize(8).text(`Claim Date: ${c.createdAt ? new Date(c.createdAt).toLocaleDateString() : 'N/A'}`, 40, startY + 52);
+      doc.fillColor('#64748b').fontSize(8).text(`Verified Date: ${c.verifiedAt ? new Date(c.verifiedAt).toLocaleDateString() : 'N/A'}`, 170, startY + 52);
+      doc.fillColor('#64748b').fontSize(8).text(`Arranged Date: ${c.returnArrangedAt ? new Date(c.returnArrangedAt).toLocaleDateString() : 'N/A'}`, 300, startY + 52);
+      doc.fillColor('#64748b').fontSize(8).text(`Received Date: ${c.receivedAt ? new Date(c.receivedAt).toLocaleDateString() : 'N/A'}`, 430, startY + 52);
+
+      doc.moveDown(7);
+    });
+
+    doc.end();
+  }
 }
+

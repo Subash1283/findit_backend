@@ -15,6 +15,9 @@ export enum ClaimStatus {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
   REVOKED = 'REVOKED',
+  RETURN_ARRANGED = 'RETURN_ARRANGED',
+  ITEM_RECEIVED = 'ITEM_RECEIVED',
+  RETURN_COMPLETED = 'RETURN_COMPLETED',
 }
 
 @Entity()
@@ -44,6 +47,21 @@ export class ClaimRequest {
 
   @Column({ nullable: true })
   verificationCode?: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  verifiedAt?: Date;
+
+  @Column({ type: 'timestamp', nullable: true })
+  returnArrangedAt?: Date;
+
+  @Column({ type: 'timestamp', nullable: true })
+  receivedAt?: Date;
+
+  @Column({ type: 'timestamp', nullable: true })
+  completedAt?: Date;
+
+  @Column({ nullable: true })
+  adminId?: number;
 
   @CreateDateColumn()
   createdAt: Date;

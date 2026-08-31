@@ -14,12 +14,13 @@ import { ResetPasswordModule } from '../reset-password/resetpassword.module';
 import { AIModule } from '../module/ai/ai.module';
 
 import { ClaimRequest } from './entities/claim-request.entity';
+import { ClaimStatusHistory } from './entities/claim-status-history.entity';
 import { ItemsCleanupService } from './items.cleanup.service';
 import { ChatModule } from '../chat/chat.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Item, Dispute, ClaimRequest]),
+    TypeOrmModule.forFeature([Item, Dispute, ClaimRequest, ClaimStatusHistory]),
     UsersModule,
     NotificationsModule,
     ResetPasswordModule,

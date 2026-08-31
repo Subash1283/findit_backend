@@ -63,6 +63,10 @@ export class UsersService {
     return this.userRepo.save(user);
   }
 
+  async findAdmins(): Promise<User[]> {
+    return this.userRepo.find({ where: { role: Role.ADMIN } });
+  }
+
   private async ensureAdminVerified(user: User): Promise<User> {
     if (user.role !== Role.ADMIN) return user;
     if (user.isVerified && user.verificationStatus === 'verified') return user;
