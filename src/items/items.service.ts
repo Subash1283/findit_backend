@@ -1793,7 +1793,7 @@ export class ItemsService {
       doc.on('error', reject);
 
       const C = {
-        primary: '#0c1a3a',
+        primary: '#166534',       // dark green header
         accent: '#22c55e',
         accentLight: '#dcfce7',
         accentBorder: '#bbf7d0',
@@ -1804,7 +1804,7 @@ export class ItemsService {
         textSec: '#475569',
         muted: '#64748B',
         border: '#E2E8F0',
-        blue: '#378add',
+        blue: '#86efac',          // mint green tagline (readable on dark green)
       };
 
       const PW = 595.28;
