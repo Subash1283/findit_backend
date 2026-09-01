@@ -325,6 +325,7 @@ export class VisionService {
       const prompt = `
         Analyze this image of a lost or found item.
         Provide a short title (2-4 words), the most appropriate category (Must be exactly one of: "Electronics", "Documents", "Vehicles", "Keys", "Clothing", "Wallets & Bags", or "Other"), and a brief physical description (1-2 sentences).
+        IMPORTANT: Categorize watches (including analog/digital watches, unless explicitly a smartwatch) and jewelry as "Other", NOT "Electronics".
         Return ONLY valid JSON in this exact format, with no markdown code blocks or extra text:
         {
           "title": "Short descriptive title",
