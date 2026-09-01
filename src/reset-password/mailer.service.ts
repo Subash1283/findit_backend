@@ -40,4 +40,23 @@ export class MailerService {
       attachments,
     });
   }
+
+  async sendMailWithBuffer(
+    to: string,
+    subject: string,
+    html: string,
+    bufferAttachments: { filename: string; content: Buffer; contentType: string }[],
+  ) {
+    await this.transporter.sendMail({
+      from: `"FindIT" <${process.env.SMTP_USER || 'noreply@findit.com'}>`,
+      to,
+      subject,
+      html,
+      attachments: bufferAttachments.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.contentType,
+      })),
+    });
+  }
 }

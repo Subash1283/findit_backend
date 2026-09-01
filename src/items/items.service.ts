@@ -1626,11 +1626,342 @@ export class ItemsService {
       );
     }
 
+    // Auto-generate receipt PDF and email it to the receiver
+    if (claim.user?.email) {
+      this.generateReceiptPdfBuffer(claim)
+        .then((pdfBuffer) => {
+          const receiptHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Item Receipt - FindIT</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f0f4f8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;">
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f0f4f8;padding:48px 16px;">
+    <tr>
+      <td align="center">
+
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:580px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
+
+          <!-- HEADER -->
+          <tr>
+            <td style="background-color:#0c1a3a;padding:36px 36px 32px;text-align:center;">
+              <p style="margin:0 0 14px;font-size:11px;font-weight:700;letter-spacing:3px;color:#378add;text-transform:uppercase;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+                FINDIT
+              </p>
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 16px;">
+                <tr>
+                  <td style="width:52px;height:52px;background-color:rgba(34,197,94,0.18);border-radius:26px;text-align:center;vertical-align:middle;font-size:22px;line-height:52px;">
+                    &#128196;
+                  </td>
+                </tr>
+              </table>
+              <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#f0f6ff;line-height:1.3;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+                Your Item Receipt is Ready!
+              </h1>
+              <p style="margin:0;font-size:13px;color:#85b7eb;line-height:1.6;">
+                Official proof of item handover — keep this for your records
+              </p>
+            </td>
+          </tr>
+
+          <!-- BODY -->
+          <tr>
+            <td style="padding:36px;">
+
+              <p style="margin:0 0 20px;font-size:15px;color:#1a202c;line-height:1.7;">
+                Hi <strong style="font-weight:600;">${claim.user?.name || 'there'}</strong>,
+              </p>
+              <p style="margin:0 0 28px;font-size:14px;color:#64748b;line-height:1.7;">
+                Congratulations! Your item <strong style="color:#0c1a3a;">"${item.title}"</strong> has been successfully returned to you. We've attached a PDF receipt to this email as official proof of the handover.
+              </p>
+
+              <!-- Receipt Summary Card -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+                <tr>
+                  <td style="background-color:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:24px;">
+                    <p style="margin:0 0 6px;font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#15803d;">Receipt Summary</p>
+                    <p style="margin:0 0 16px;font-size:17px;font-weight:700;color:#14532d;">${item.title}</p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="padding:4px 0;font-size:12px;color:#94a3b8;width:110px;vertical-align:top;">Claim ID</td>
+                        <td style="padding:4px 0;font-size:13px;font-weight:600;color:#334155;">#${claim.id}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 0;font-size:12px;color:#94a3b8;width:110px;vertical-align:top;">Category</td>
+                        <td style="padding:4px 0;font-size:13px;font-weight:600;color:#334155;">${item.category || '—'}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 0;font-size:12px;color:#94a3b8;width:110px;vertical-align:top;">Received On</td>
+                        <td style="padding:4px 0;font-size:13px;font-weight:600;color:#15803d;">${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</td>
+                      </tr>
+                      ${claim.verificationCode ? `<tr>
+                        <td style="padding:4px 0;font-size:12px;color:#94a3b8;width:110px;vertical-align:top;">Verification Code</td>
+                        <td style="padding:4px 0;font-size:13px;font-weight:700;color:#0c1a3a;letter-spacing:1px;">${claim.verificationCode}</td>
+                      </tr>` : ''}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Attachment Notice -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+                <tr>
+                  <td style="background-color:#f8fafc;border-radius:10px;padding:16px 18px;border:1px solid #e2e8f0;">
+                    <p style="margin:0;font-size:13px;color:#334155;line-height:1.7;">
+                      &#128206;&nbsp; <strong>item-receipt-${claim.id}.pdf</strong> is attached to this email. It contains the full details of the handover and serves as your official receipt.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Sign-off -->
+              <p style="margin:24px 0 0;font-size:14px;color:#64748b;line-height:1.6;">
+                Thank you for using FindIT,<br />
+                <strong style="color:#1a202c;font-weight:600;">The FindIT Team</strong>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- DIVIDER -->
+          <tr>
+            <td style="padding:0 36px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="border-top:1px solid #e2e8f0;font-size:0;">&nbsp;</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="padding:20px 36px;text-align:center;">
+              <p style="margin:0 0 4px;font-size:11px;color:#94a3b8;">
+                You're receiving this because you successfully claimed an item on FindIT.
+              </p>
+              <p style="margin:0;font-size:11px;color:#cbd5e1;">
+                &copy; ${new Date().getFullYear()} FindIT &middot; All rights reserved
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>`;
+
+          return this.mailerService.sendMailWithBuffer(
+            claim.user.email,
+            `Item Receipt: ${item.title} — FindIT`,
+            receiptHtml,
+            [
+              {
+                filename: `item-receipt-${claim.id}.pdf`,
+                content: pdfBuffer,
+                contentType: 'application/pdf',
+              },
+            ],
+          );
+        })
+        .catch((e) => console.error('Receipt PDF email error:', e));
+    }
+
     return {
       message: 'Item Successfully Returned! Your item has been successfully returned.',
       claim,
     };
   }
+
+//pdf generator in a4 size
+  private generateReceiptPdfBuffer(claim: ClaimRequest): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const PDFDocument = require('pdfkit');
+      const chunks: Buffer[] = [];
+
+      const doc = new PDFDocument({ size: 'A4', margin: 0, bufferPages: false });
+
+      doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      const C = {
+        primary: '#0c1a3a',
+        accent: '#22c55e',
+        accentLight: '#dcfce7',
+        accentBorder: '#bbf7d0',
+        successText: '#15803d',
+        white: '#FFFFFF',
+        bg: '#F8FAFC',
+        text: '#1E293B',
+        textSec: '#475569',
+        muted: '#64748B',
+        border: '#E2E8F0',
+        blue: '#378add',
+      };
+
+      const PW = 595.28;
+      const PH = 841.89;
+      const L = 36;
+      const R = PW - 36;
+      const CW = R - L;
+
+      const fmt = (d: any) =>
+        d
+          ? new Date(d).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'N/A';
+
+      // ── Background ─────────────────────────────────────────────────────────
+      doc.rect(0, 0, PW, PH).fill(C.bg);
+
+      // ── Header ─────────────────────────────────────────────────────────────
+      doc.rect(0, 0, PW, 100).fill(C.primary);
+      doc.rect(0, 97, PW, 3).fill(C.accent);
+
+      // Logo circle
+      doc.circle(58, 48, 22).fill(C.white);
+      doc.fillColor(C.primary).font('Helvetica-Bold').fontSize(20).text('F', 52, 36);
+
+      // Brand name
+      doc.fillColor(C.white).font('Helvetica-Bold').fontSize(22).text('FindIT', 92, 24);
+      doc.fillColor(C.blue).font('Helvetica').fontSize(7.5).text('LOST & FOUND MANAGEMENT SYSTEM', 94, 50);
+
+      // Receipt label (right side)
+      doc.fillColor(C.accentLight).font('Helvetica-Bold').fontSize(9).text('ITEM RECEIPT', 380, 30, { width: 180, align: 'right' });
+      doc.fillColor('#BBF7D0').font('Helvetica').fontSize(7).text(`Receipt #${claim.id}  •  ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`, 380, 46, { width: 180, align: 'right' });
+      doc.fillColor('#BBF7D0').font('Helvetica').fontSize(7).text(`Generated: ${new Date().toLocaleString()}`, 380, 58, { width: 180, align: 'right' });
+
+      // ── Official proof banner ───────────────────────────────────────────────
+      const bannerY = 112;
+      doc.roundedRect(L, bannerY, CW, 26, 6).fill(C.accentLight);
+      doc.roundedRect(L, bannerY, CW, 26, 6).lineWidth(0.6).stroke(C.accentBorder);
+      doc.fillColor(C.successText).font('Helvetica-Bold').fontSize(8.5)
+        .text('✓  Official Proof of Item Handover — This document confirms successful return of the item listed below.', L + 12, bannerY + 8, { width: CW - 24 });
+
+      // ── Item Info Card ──────────────────────────────────────────────────────
+      const itemCardY = bannerY + 40;
+      doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7).text('ITEM DETAILS', L, itemCardY);
+
+      const itemCardInnerY = itemCardY + 12;
+      doc.roundedRect(L, itemCardInnerY, CW, 90, 8).fill(C.white);
+      doc.roundedRect(L, itemCardInnerY, CW, 90, 8).lineWidth(0.6).stroke(C.border);
+      doc.rect(L, itemCardInnerY, 4, 90).fill(C.accent);
+
+      const item = claim.item;
+      doc.fillColor(C.text).font('Helvetica-Bold').fontSize(13)
+        .text(item?.title || 'Unknown Item', L + 16, itemCardInnerY + 10, { width: CW - 100, ellipsis: true });
+
+      // Category badge
+      doc.roundedRect(R - 90, itemCardInnerY + 10, 86, 16, 8).fill(C.accentLight);
+      doc.fillColor(C.successText).font('Helvetica-Bold').fontSize(6.5)
+        .text((item?.category || 'N/A').toUpperCase(), R - 90, itemCardInnerY + 15, { width: 86, align: 'center' });
+
+      // Item detail rows
+      const rows = [
+        ['Location', item?.location || '—'],
+        ['Item Type', (item?.type || '—').toUpperCase()],
+        ...(item?.description ? [['Description', item.description.slice(0, 120) + (item.description.length > 120 ? '...' : '')]] : []),
+      ];
+
+      let rowY = itemCardInnerY + 34;
+      for (const [label, value] of rows) {
+        doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(6).text(label.toUpperCase(), L + 16, rowY, { width: 80 });
+        doc.fillColor(C.textSec).font('Helvetica').fontSize(7.5).text(value, L + 100, rowY, { width: CW - 116 });
+        rowY += 16;
+      }
+
+      // ── Parties Card ────────────────────────────────────────────────────────
+      const partiesY = itemCardInnerY + 104;
+      doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7).text('PARTIES INVOLVED', L, partiesY);
+
+      const partiesInnerY = partiesY + 12;
+      const halfW = (CW - 8) / 2;
+
+      // Receiver card
+      doc.roundedRect(L, partiesInnerY, halfW, 70, 8).fill(C.white);
+      doc.roundedRect(L, partiesInnerY, halfW, 70, 8).lineWidth(0.6).stroke(C.border);
+      doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(6).text('RECEIVER (CLAIMANT)', L + 12, partiesInnerY + 10);
+      doc.fillColor(C.text).font('Helvetica-Bold').fontSize(9)
+        .text(claim.user?.name || 'N/A', L + 12, partiesInnerY + 22, { width: halfW - 24, ellipsis: true });
+      doc.fillColor(C.textSec).font('Helvetica').fontSize(7.5)
+        .text(claim.user?.email || 'N/A', L + 12, partiesInnerY + 36, { width: halfW - 24, ellipsis: true });
+
+      // Finder card
+      const finderX = L + halfW + 8;
+      doc.roundedRect(finderX, partiesInnerY, halfW, 70, 8).fill(C.white);
+      doc.roundedRect(finderX, partiesInnerY, halfW, 70, 8).lineWidth(0.6).stroke(C.border);
+      doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(6).text('FINDER / ITEM POSTER', finderX + 12, partiesInnerY + 10);
+      doc.fillColor(C.text).font('Helvetica-Bold').fontSize(9)
+        .text(item?.user?.name || 'N/A', finderX + 12, partiesInnerY + 22, { width: halfW - 24, ellipsis: true });
+      doc.fillColor(C.textSec).font('Helvetica').fontSize(7.5)
+        .text(item?.user?.email || 'N/A', finderX + 12, partiesInnerY + 36, { width: halfW - 24, ellipsis: true });
+
+      // ── Timeline Card ───────────────────────────────────────────────────────
+      const tlY = partiesInnerY + 84;
+      doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7).text('HANDOVER TIMELINE', L, tlY);
+
+      const tlInnerY = tlY + 12;
+      doc.roundedRect(L, tlInnerY, CW, 52, 8).fill(C.white);
+      doc.roundedRect(L, tlInnerY, CW, 52, 8).lineWidth(0.6).stroke(C.border);
+
+      const timelineCols = [
+        { label: 'CLAIM SUBMITTED', value: fmt(claim.createdAt), x: L + 16 },
+        { label: 'CLAIM VERIFIED', value: fmt(claim.verifiedAt), x: L + 16 + CW * 0.25 },
+        { label: 'IN TRANSIT', value: fmt(claim.returnArrangedAt), x: L + 16 + CW * 0.5 },
+        { label: 'ITEM RECEIVED', value: fmt(claim.receivedAt || new Date()), x: L + 16 + CW * 0.75 },
+      ];
+
+      for (const col of timelineCols) {
+        doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(5.5).text(col.label, col.x, tlInnerY + 10, { width: 100 });
+        doc.fillColor(col.label === 'ITEM RECEIVED' ? C.successText : C.text)
+          .font('Helvetica-Bold').fontSize(7.5).text(col.value, col.x, tlInnerY + 22, { width: 100 });
+      }
+
+      // Connecting dots
+      const dotY = tlInnerY + 40;
+      const dotPositions = timelineCols.map((c) => c.x + 4);
+      doc.moveTo(dotPositions[0], dotY).lineTo(dotPositions[3], dotY).lineWidth(0.8).stroke(C.border);
+      for (const dx of dotPositions) {
+        doc.circle(dx, dotY, 3).fill(C.accent);
+      }
+
+      // ── Verification Code ───────────────────────────────────────────────────
+      if (claim.verificationCode) {
+        const vcY = tlInnerY + 66;
+        doc.roundedRect(L, vcY, CW, 36, 8).fill(C.accentLight);
+        doc.roundedRect(L, vcY, CW, 36, 8).lineWidth(0.6).stroke(C.accentBorder);
+        doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(6.5).text('VERIFICATION CODE', L + 16, vcY + 8);
+        doc.fillColor(C.primary).font('Helvetica-Bold').fontSize(14)
+          .text(claim.verificationCode, L + 16, vcY + 18, { characterSpacing: 3 });
+      }
+
+      // ── Footer ──────────────────────────────────────────────────────────────
+      const footerY = PH - 68;
+      doc.moveTo(L, footerY - 8).lineTo(R, footerY - 8).lineWidth(0.5).stroke(C.border);
+
+      doc.roundedRect(L, footerY, CW, 32, 6).fill('#f0fdf4');
+      doc.fillColor(C.successText).font('Helvetica-Bold').fontSize(7)
+        .text('This receipt serves as official confirmation that the above item has been handed over to the rightful owner.', L + 12, footerY + 6, { width: CW - 24, align: 'center' });
+      doc.fillColor(C.muted).font('Helvetica').fontSize(6)
+        .text('This is a system-generated document by FindIT Lost & Found Management System. No signature required.', L + 12, footerY + 18, { width: CW - 24, align: 'center' });
+
+      doc.fillColor(C.muted).font('Helvetica').fontSize(6).text(`© ${new Date().getFullYear()} FindIT · support@findit.com`, L, footerY + 42, { width: CW, align: 'center' });
+
+      doc.end();
+    });
+  }
+
 
 
 
