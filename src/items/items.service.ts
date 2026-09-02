@@ -1015,7 +1015,7 @@ export class ItemsService {
     requestId: number,
     responderId: number,
     status: ClaimStatus,
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; verificationCode?: string; claimRequest?: ClaimRequest }> {
     const claimRequest = await this.claimRequestRepository.findOne({
       where: { id: requestId },
       relations: ['item', 'user'],
@@ -1186,7 +1186,11 @@ export class ItemsService {
         );
       }
 
-      return { message: 'Claim verified successfully.' };
+      return {
+        message: 'Claim verified successfully.',
+        verificationCode,
+        claimRequest,
+      };
     }
 
     throw new BadRequestException('Invalid status');
