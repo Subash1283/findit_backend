@@ -15,7 +15,7 @@ export class VisionService {
   private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null =
     null;
   private readonly fallbackModelIds = [
-    'gemini-2.5-flash-lite',
+    'gemini-3.5-flash-lite',
     'gemini-2.5-flash',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
@@ -46,6 +46,27 @@ export class VisionService {
   private isRetryableError(error: unknown): boolean {
     const status = (error as { status?: number })?.status;
     return status === 503 || status === 429 || status === 500 || status === 502;
+  }
+
+  private isQuotaExhaustedError(error: unknown): boolean {
+    const status = (error as { status?: number })?.status;
+    if (status !== 429) return false;
+    
+    const errString = String(error);
+    if (
+      errString.includes('GenerateRequestsPerDayPerProjectPerModel-FreeTier') ||
+      errString.includes('You exceeded your current quota') ||
+      errString.includes('generativelanguage.googleapis.com/generate_content_free_tier_requests')
+    ) {
+      return true;
+    }
+    
+    const errorDetails = (error as any)?.errorDetails;
+    if (Array.isArray(errorDetails)) {
+      return errorDetails.some((d: any) => d?.['@type'] === 'type.googleapis.com/google.rpc.QuotaFailure');
+    }
+    
+    return false;
   }
 
   private sleep(ms: number): Promise<void> {
@@ -81,9 +102,15 @@ export class VisionService {
           return result.response.text();
         } catch (error) {
           lastError = error;
+          
+          if (this.isQuotaExhaustedError(error)) {
+            console.warn(`[VisionService] Gemini daily quota exhausted. Skipping AI auto-fill.`);
+            throw error; // Immediately throw, breaking both loops
+          }
+
           const status = (error as { status?: number })?.status;
           const retryable = this.isRetryableError(error);
-          if (!retryable) break;
+          if (!retryable) break; // Break attempt loop, try next model
           if (attempt < 1) {
             const delayMs = 1000 * 2 ** attempt;
             console.warn(
