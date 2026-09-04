@@ -543,34 +543,91 @@ export class ItemsService {
       relations: ['user'],
     });
 
-    for (const match of candidates) {
-      let score = 0;
+    const GENERIC_STOPWORDS = new Set([
+      'black', 'white', 'blue', 'red', 'green', 'yellow', 'brown', 'grey', 'gray',
+      'dark', 'light', 'gold', 'silver', 'pink', 'purple', 'orange', 'bronze',
+      'small', 'large', 'medium', 'big', 'mini', 'pro', 'max', 'new', 'old',
+      'lost', 'found', 'my', 'the', 'and', 'for', 'with', 'item', 'device', 'thing',
+      'near', 'area', 'brand', 'color', 'colour', 'a', 'an', 'in', 'on', 'of', 'at',
+      'original', 'genuine', 'case', 'cover'
+    ]);
 
-      // Normalize title words to handle synonyms (e.g., "purse" -> "wallet")
-      const rawTitleWords = newItem.title.toLowerCase().split(/\s+/);
-      const normalizedTitleWords = rawTitleWords.map((w) => this.normalizeCategory(w));
-      const matchTitle = match.title.toLowerCase();
-      const matchNormalizedTitle = this.normalizeCategory(matchTitle);
-      const titleMatches = normalizedTitleWords.filter(
-        (word) => word.length > 2 && matchNormalizedTitle.includes(word),
-      );
-      if (titleMatches.length > 0) score += 0.5;
-      // Additional boost if original titles contain synonym words after normalization
-      if (rawTitleWords.some((w) => this.normalizeCategory(w) !== w) && match.title.toLowerCase().includes(this.normalizeCategory(rawTitleWords.find((w) => this.normalizeCategory(w) !== w) || ''))) {
-        score += 0.2;
+    const extractCleanWords = (str: string) =>
+      (str || '')
+        .toLowerCase()
+        .split(/[\s,.\-_/]+/)
+        .map((w) => w.replace(/[^a-z0-9]/g, ''))
+        .filter((w) => w.length > 1);
+
+    for (const match of candidates) {
+      // 1. STRICT CATEGORY COMPATIBILITY CHECK
+      const cat1 = (newItem.category || '').toLowerCase().trim();
+      const cat2 = (match.category || '').toLowerCase().trim();
+      const isCategoryMatch = cat1 === cat2;
+      const isCategoryFlexible = cat1 === 'other' || cat2 === 'other' || !cat1 || !cat2;
+
+      // If both specify a category (and neither is 'other'), different categories CANNOT match!
+      if (!isCategoryMatch && !isCategoryFlexible) {
+        continue; // e.g. Electronics vs Documents or Wallets & Bags will never trigger a false match email
       }
 
+      // 2. SUBSTANTIVE NOUN MATCHING (Filter out colors like 'black', 'white', etc.)
+      const newWords = extractCleanWords(newItem.title);
+      const matchWords = extractCleanWords(match.title);
+
+      const newSubstantive = newWords.filter((w) => !GENERIC_STOPWORDS.has(w) && w.length > 2);
+      const matchSubstantive = matchWords.filter((w) => !GENERIC_STOPWORDS.has(w) && w.length > 2);
+
+      const newCanon = newSubstantive.map((w) => this.normalizeCategory(w));
+      const matchCanon = matchSubstantive.map((w) => this.normalizeCategory(w));
+      const matchTitleLower = match.title.toLowerCase();
+
+      const substantiveMatches = newCanon.filter(
+        (word) => matchCanon.includes(word) || matchTitleLower.includes(word)
+      );
+
+      // If both items have non-generic noun words (e.g. "macbook" vs "watch"), but NONE match, SKIP!
+      if (newSubstantive.length > 0 && matchSubstantive.length > 0 && substantiveMatches.length === 0) {
+        continue; // e.g. "black macbook" vs "black watch" will be rejected right here!
+      }
+
+      let score = 0;
+
+      // Title Score: Substantive noun match gives +0.50
+      if (substantiveMatches.length > 0) {
+        score += 0.50;
+      } else if (newSubstantive.length === 0 || matchSubstantive.length === 0) {
+        score += 0.15;
+      }
+
+      // Shared color / adjective bonus (+0.15 max) ONLY IF substantive nouns matched or flex category
+      const newModifiers = newWords.filter((w) => GENERIC_STOPWORDS.has(w));
+      const matchModifiers = matchWords.filter((w) => GENERIC_STOPWORDS.has(w));
+      const sharedModifiers = newModifiers.filter((w) => matchModifiers.includes(w));
+      if (sharedModifiers.length > 0 && (substantiveMatches.length > 0 || isCategoryFlexible)) {
+        score += 0.15;
+      }
+
+      // Category Match Bonus
+      if (isCategoryMatch) {
+        score += 0.15;
+      }
+
+      // Visual Similarity Bonus
       const visualScore = this.visionService.calculateSimilarity(
         newItem.tags,
         match.tags,
       );
-      score += visualScore * 0.4;
+      score += visualScore * 0.20;
 
-      if (newItem.location.toLowerCase() === match.location.toLowerCase())
-        score += 0.2;
+      // Location Match Bonus
+      if (newItem.location && match.location && newItem.location.toLowerCase().trim() === match.location.toLowerCase().trim()) {
+        score += 0.15;
+      }
 
-      if (score >= 0.4) {
-        const isHighConfidence = score > 0.7;
+      // Require a minimum threshold score of 0.55 to trigger notifications
+      if (score >= 0.55) {
+        const isHighConfidence = score >= 0.75;
         const matchLevel = isHighConfidence
           ? '🔥 HIGH CONFIDENCE MATCH'
           : 'Potential Match';
