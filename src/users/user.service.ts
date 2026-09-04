@@ -251,7 +251,10 @@ export class UsersService {
       const filePath = join(process.cwd(), 'uploads', 'users', filename);
       if (!existsSync(filePath)) continue;
       
-      const result = await this.visionService.extractNameFromIdentityDocument(filePath, user.verificationDocumentType || 'identity document');
+      const result = await this.visionService.extractNameFromIdentityDocument(
+        filePath,
+        user.verificationDocumentType || 'identity document',
+      );
       
       if (!result.isValid) {
         anyInvalid = true;

@@ -5,7 +5,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { transliterateDevanagari } from '../../users/identity-verification.util';
+import { transliterateDevanagari, namesMatch } from '../../users/identity-verification.util';
 @Injectable()
 export class LocalOcrService {
   private readonly logger = new Logger(LocalOcrService.name);
@@ -242,25 +242,18 @@ If no name found, return: { "fullName": null }
 
   //Parses a person's name from raw OCR text of an identity document.
 
-  //Strategy (in order):
-  //  1. Label on same line:  "Name: Subash Shrestha"
-  //  2. Label then next line: "Full Name of Holder\nSubash SHRESTHA"
-  //     (common on Nepali citizenship cards)
-  // Heuristic: find an all-caps or Title Case line of 2–4 words
-  //  that looks like a proper name.
-
-  private parseNameFromOcrText(rawText: string): string | null {
+  private parseNameFromOcrText(rawText: string, expectedName?: string): string | null {
     const lines = rawText
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 1);
 
     // ── Strategy 1: label + value on the SAME line
-    // e.g. "== te Name.: - ~ SUMIT SHRESTHA i" or "Name: Subash Shrestha"
+    // e.g. "Full Name: © ALISHATAMANG be Jie we §", "ame: RAM LAL SHRESTHA", or "नाम धर: सोहन श्रेष्ठ लिङ्ग : पुरुष"
     const inlineLabelPatterns = [
-      /(?:full\s*)?name\s*(?:of\s*(?:holder|applicant))?\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
-      /naam\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
-      /नाम\s*(?:थर)?\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
+      /\b(?:full\s*)?(?:name|[nN]?ame|naam)\b\s*(?:\([^)]*\))?\s*(?:of\s*(?:holder|applicant))?\s*[:\-\/~.]+\s*[-~]*\s*(.+)/i,
+      /(?:पुरा\s*)?नाम\s*(?:[\/,\s]*(?:थर|धर|naam))?\s*[:\-\/~.]*\s*[-~]*\s*(.+)/i,
+      /\bnaam\s*(?:thar|dhar)?\b\s*[:\-\/~.]*\s*[-~]*\s*(.+)/i,
     ];
 
     for (const line of lines) {
@@ -271,7 +264,10 @@ If no name found, return: { "fullName": null }
         const match = line.match(pattern);
         if (match) {
           let rawVal = match[1];
-          if (/[\u0900-\u097F]/.test(rawVal)) {
+          // Strip secondary inline field labels (e.g. लिङ्ग, sex, gender, जन्म, स्थान, जिल्ला, etc.)
+          rawVal = rawVal.split(/(?:लिङ्ग|sex|gender|जन्म|स्थान|जिल्ला|ठेगाना|बाबु|आमा|पति|पत्नी|dob|date)/i)[0].trim();
+
+          if (!/[a-zA-Z]{2,}/.test(rawVal) && /[\u0900-\u097F]/.test(rawVal)) {
             rawVal = transliterateDevanagari(rawVal);
           }
           const candidate = this.cleanName(rawVal);
@@ -291,10 +287,13 @@ If no name found, return: { "fullName": null }
     // ── Strategy 2: label on one line, name on the NEXT line ─────────────
     // Nepali citizenship cards: "नाम / Full Name of Holder" then next line is the name.
     const nextLineLabelPattern =
-      /(?:full\s*)?name\s*(?:of\s*(?:holder|applicant))?|नाम/i;
+      /\b(?:full\s*)?(?:name|[nN]?ame|naam)\b\s*(?:\([^)]*\))?\s*(?:of\s*(?:holder|applicant))?|(?:पुरा\s*)?नाम/i;
 
     for (let i = 0; i < lines.length - 1; i++) {
       if (/दर्जा|drja|प्रशासकीय|अधिकृत|दस्तखत/i.test(lines[i])) continue;
+
+      // Skip lines that ALREADY contain a value on the same line (e.g., "नाम धर: सोहन श्रेष्ठ")
+      if (/[:\-\/~.].{3,}/.test(lines[i]) && lines[i].length > 12) continue;
 
       if (nextLineLabelPattern.test(lines[i])) {
         for (
@@ -305,7 +304,7 @@ If no name found, return: { "fullName": null }
           let nextLine = lines[i + offset];
           if (/दर्जा|drja|प्रशासकीय|अधिकृत|दस्तखत/i.test(nextLine)) continue;
 
-          if (/[\u0900-\u097F]/.test(nextLine)) {
+          if (!/[a-zA-Z]{2,}/.test(nextLine) && /[\u0900-\u097F]/.test(nextLine)) {
             nextLine = transliterateDevanagari(nextLine);
           }
           const candidate = this.cleanName(nextLine);
@@ -325,8 +324,6 @@ If no name found, return: { "fullName": null }
     }
 
     // ── Strategy 3: heuristic — look for a standalone name-like line ─────
-    // Must be purely ASCII, 2–4 words, all Title-Case or ALL-CAPS,
-    // none of which are known non-name keywords.
     const skipKeywords = new Set([
       'nepal',
       'government',
@@ -380,27 +377,42 @@ If no name found, return: { "fullName": null }
       'of',
       'kabhre',
       'certificate',
-      // Date-related terms that appear in DOB labels
       'ad',
       'bs',
       'born',
-      'dob',
       'year',
       'month',
       'day',
       'place',
     ]);
 
+    const noiseKeywords = new Set([
+      'nb', 'te', 'fe', 'yl', 'ae', 'ey', 'or', 'is', 'it', 'to', 'in', 'on',
+      'at', 'by', 're', 'no', 've', 'se', 'ii', 'iii', 'iv', 'vi', 'vii', 'viii',
+      'ix', 'co', 'id', 'sn', 'st', 'nd', 'rd', 'th', 'pr', 'nnn', 'eao', 'eac',
+      'eaf', 'eat', 'eee', 'sss', 'sessa', 'graal', 'ams', 'art', 'png', 'san',
+      'sexfeml', 'sexmale', 'pai', 'jie', 'we',
+    ]);
+
     for (const line of lines) {
+      // Reject lines with digits, symbols, or heavy OCR garble
+      if (/[0-9\u0966-\u096F]/.test(line)) continue;
+      if (/[%§=@|\\\/#~_\+\*\^\<\>\[\]\{\}«»\?]/.test(line)) continue;
+
+      const letterCount = (line.match(/[a-zA-Z\u0900-\u097F]/g) || []).length;
+      if (line.length === 0 || letterCount / line.length < 0.6) continue;
+
       let targetLine = line;
-      if (/[\u0900-\u097F]/.test(targetLine)) {
+      if (!/[a-zA-Z]{2,}/.test(targetLine) && /[\u0900-\u097F]/.test(targetLine)) {
         targetLine = transliterateDevanagari(targetLine);
       }
 
-      const words = targetLine.split(/\s+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)); // min 2 chars per word
+      const words = targetLine.split(/\s+/).filter((w) => /^[A-Za-z]{2,}$/.test(w));
       if (words.length < 2 || words.length > 4) continue;
 
-      const hasKeyword = words.some((w) => skipKeywords.has(w.toLowerCase()));
+      const hasKeyword = words.some(
+        (w) => skipKeywords.has(w.toLowerCase()) || noiseKeywords.has(w.toLowerCase()),
+      );
       if (hasKeyword) continue;
 
       const candidate = this.cleanName(words.join(' '));
@@ -420,37 +432,22 @@ If no name found, return: { "fullName": null }
     return null;
   }
 
-  //
-  // Sanity check: a plausible name must have:
-  // - At least 2 words of 2+ chars each
-  // - Total name length ≥ 5 chars
-  // - At least one word starting with an uppercase letter (proper name casing)
-
   private isPlausibleName(name: string): boolean {
     const words = name.split(/\s+/).filter((w) => w.length >= 2);
-    if (words.length < 2 || name.replace(/\s/g, '').length < 5) return false;
+    if (words.length < 2 && name.length < 5) return false;
     // At least one word must start with an uppercase letter
     return words.some((w) => /^[A-Z]/.test(w));
   }
 
-  //Detects obvious OCR garbage that is not a real name.
-  //Rejects strings like "fama XXX AEA" or "Abc DEF GHI JKL".
-
   private isOcrGarbage(name: string): boolean {
     const words = name.split(/\s+/);
-    // Reject if any word is a single-character or repeating-letter pattern (XXX, AAA)
     if (words.some((w) => /^(.)\1+$/i.test(w))) return true;
-    // Reject if all words are very short all-caps (likely acronyms / garble)
     if (words.every((w) => /^[A-Z]{1,3}$/.test(w))) return true;
-    // Reject if no word resembles a real name word (at least 3 chars, starts uppercase, has vowel)
     const looksReal = words.some(
       (w) => w.length >= 3 && /^[A-Z]/.test(w) && /[aeiouAEIOU]/.test(w),
     );
     return !looksReal;
   }
-
-  //Rejects candidate names that contain known document field label words.
-  //Catches cases like "Date of Birth AD", "Permanent Address", etc.
 
   private containsFieldKeyword(name: string): boolean {
     const fieldWords = [
@@ -464,6 +461,8 @@ If no name found, return: { "fullName": null }
       'valid',
       'nationality',
       'sex',
+      'sexfeml',
+      'sexmale',
       'gender',
       'father',
       'mother',
@@ -480,16 +479,17 @@ If no name found, return: { "fullName": null }
       'born',
       'permanent',
       'temporary',
+      'citizenship',
+      'cutzmaship',
+      'certtente',
+      'certificate',
     ];
     const lower = name.toLowerCase();
     return fieldWords.some((kw) => {
-      // Match whole word only (not substring), e.g. "ad" should not reject "Adam"
       const regex = new RegExp(`\\b${kw}\\b`, 'i');
       return regex.test(lower);
     });
   }
-  //Normalizes OCR noise from a candidate name string.
-  //Converts ALL-CAPS to Title Case, removes punctuation & digits, etc.
 
   private cleanName(raw: string): string | null {
     let cleaned = raw
@@ -497,12 +497,19 @@ If no name found, return: { "fullName": null }
       .replace(/\s+/g, ' ')
       .trim();
 
-    // Strip trailing single letter OCR noise (e.g., 'i', 'x', 'a' at end of line)
-    cleaned = cleaned.replace(/\s+[a-zA-Z]$/, '').trim();
+    // Strip common trailing OCR noise words
+    const noiseWords = new Set([
+      'be', 'jie', 'we', 'pai', 'na', 'ii', 'iii', 'iv', 'vi', 'vii', 'viii',
+      'ix', 'co', 'id', 'sn', 'st', 'nd', 'rd', 'th', 'pr', 'nnn', 'eao', 'eac',
+      'eaf', 'eat', 'eee', 'sss', 'sessa', 'graal', 'ams', 'art', 'png', 'san',
+      'sexfeml', 'sexmale', 'female', 'male', 'sex',
+    ]);
+
+    const parts = cleaned.split(' ').filter((w) => !noiseWords.has(w.toLowerCase()));
+    cleaned = parts.join(' ').trim();
 
     if (cleaned.length < 3) return null;
 
-    // Convert ALL CAPS → Title Case (e.g., "SUMIT SHRESTHA" → "Sumit Shrestha")
     const isAllCaps = cleaned === cleaned.toUpperCase();
     if (isAllCaps) {
       return cleaned.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());

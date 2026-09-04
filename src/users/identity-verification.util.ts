@@ -41,6 +41,9 @@ const NEPALI_DICTIONARY: Record<string, string> = {
   'बिकास': 'bikash',
   'सञ्जय': 'sanjay',
   'संजय': 'sanjay',
+  'सोहन': 'sohan',
+  'रोहन': 'rohan',
+  'मोहन': 'mohan',
   'राजेश': 'rajesh',
   'दिनेश': 'dinesh',
   'महेश': 'mahesh',
@@ -162,6 +165,15 @@ function nameWords(name: string): string[] {
     .filter((w) => w.length > 1);
 }
 
+function isFuzzyWordMatch(w1: string, w2: string): boolean {
+  if (w1 === w2) return true;
+  if (w1.includes(w2) || w2.includes(w1)) return true;
+  const nv1 = w1.replace(/[aeiou]/g, '');
+  const nv2 = w2.replace(/[aeiou]/g, '');
+  if (nv1 && nv2 && nv1 === nv2) return true;
+  return false;
+}
+
 /** Returns true when the account full name and document name refer to the same person. */
 export function namesMatch(accountName: string, documentName: string): boolean {
   const a = normalizeName(accountName);
@@ -175,7 +187,7 @@ export function namesMatch(accountName: string, documentName: string): boolean {
 
   const allWordsPresent = (needles: string[], haystack: string[]) =>
     needles.every((w) =>
-      haystack.some((h) => h === w || h.includes(w) || w.includes(h)),
+      haystack.some((h) => isFuzzyWordMatch(w, h)),
     );
 
   return allWordsPresent(wordsA, wordsB) || allWordsPresent(wordsB, wordsA);
