@@ -237,13 +237,13 @@ export class ItemsService {
       try {
         const fullPath = join(process.cwd(), 'uploads', 'items', imageFront);
 
-        const validation = await this.visionService.validateImageMatch(
+        const aiResult = await this.visionService.validateAndAnalyzeImage(
           fullPath,
           expectedTitle,
           dto.category,
           dto.documentType,
         );
-        if (!validation.isMatch) {
+        if (!aiResult.isMatch) {
           // Delete the uploaded file since validation failed
           const fs = await import('fs');
           if (fs.existsSync(fullPath)) {
@@ -253,7 +253,7 @@ export class ItemsService {
             statusCode: 400,
             error: 'Image Mismatch',
             message:
-              validation.reason ||
+              aiResult.reason ||
               'The uploaded image does not match the reported item category or title. Please upload a correct image or update the category.',
             details: {
               title: dto.title,
@@ -266,11 +266,7 @@ export class ItemsService {
         // Skip AI auto-labeling for documents — document type already identifies the item
         // and documents contain sensitive personal information not suitable for AI tagging
         if (category !== 'documents') {
-          item.tags = await this.visionService.analyzeImage(
-            fullPath,
-            expectedTitle,
-            dto.category,
-          );
+          item.tags = aiResult.tags;
         }
       } catch (err) {
         if (err instanceof BadRequestException) throw err;

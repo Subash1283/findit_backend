@@ -16,13 +16,11 @@ export class VisionService {
     null;
   private readonly fallbackModelIds = [
     'gemini-3.5-flash-lite',
-    'gemini-2.5-flash',
+    'gemini-flash-latest',
+    'gemini-3.6-flash',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
     'gemini-1.5-flash',
-    'gemini-1.5-flash-8b',
-    'gemini-1.5-pro',
-    'gemini-1.0-pro-001',
   ];
   constructor(
     private configService: ConfigService,
@@ -32,14 +30,14 @@ export class VisionService {
     if (apiKey) {
       this.genAI = new GoogleGenerativeAI(apiKey);
       const primary =
-        this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.5-flash';
+        this.configService.get<string>('GEMINI_MODEL') || 'gemini-3.5-flash-lite';
       this.model = this.genAI.getGenerativeModel({ model: primary });
     }
   }
 
   private getModelIds(): string[] {
     const primary =
-      this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.5-flash';
+      this.configService.get<string>('GEMINI_MODEL') || 'gemini-3.5-flash-lite';
     return [...new Set([primary, ...this.fallbackModelIds])];
   }
 
@@ -81,21 +79,12 @@ export class VisionService {
     }
 
     let lastError: unknown;
-    const modelIds = this.getModelIds().slice(0, 2); // Limit to 2 models max to avoid Render timeout
+    const modelIds = this.getModelIds();
     for (const modelId of modelIds) {
       const model = this.genAI.getGenerativeModel({ model: modelId });
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          // 25-second timeout per call to prevent Render free tier from killing the connection
-          const aiPromise = model.generateContent(parts);
-          aiPromise.catch(() => {}); // Prevent unhandled rejection crash if it fails after timeout
-
-          const result = await Promise.race([
-            aiPromise,
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('AI call timed out (25s)')), 25000),
-            ),
-          ]) as import('@google/generative-ai').GenerateContentResult;
+          const result = await model.generateContent(parts);
           if (modelId !== modelIds[0] && attempt === 0) {
             console.log(`[VisionService] Using fallback model: ${modelId}`);
           }
@@ -120,7 +109,7 @@ export class VisionService {
           }
         }
       }
-      console.warn(`[VisionService] ${modelId} failed, trying next model…`);
+      console.warn(`[VisionService] ${modelId} failed (${(lastError as Error)?.message || lastError}), trying next model…`);
     }
     throw lastError;
   }
@@ -197,6 +186,73 @@ export class VisionService {
     } catch (error) {
       console.error('[VisionService] AI Analysis failed:', error);
       return this.simulateAnalysis(title, category);
+    }
+  }
+
+  async validateAndAnalyzeImage(
+    filePath: string,
+    title: string,
+    category: string,
+    documentType?: string,
+  ): Promise<{ isMatch: boolean; reason?: string; tags: string[] }> {
+    if (!this.model) {
+      return { isMatch: true, tags: this.simulateAnalysis(title, category) };
+    }
+
+    try {
+      console.log(`[VisionService] Validating and Analyzing image in 1 call: ${filePath}`);
+      const imagePart = await this.readImagePart(filePath);
+
+      let documentInstruction = '';
+      if (category.toLowerCase() === 'documents' && documentType) {
+        const readableDocType = documentType.replace(/_/g, ' ');
+        documentInstruction = `
+        CRITICAL DOCUMENT TYPE COMPLIANCE RULE:
+        The selected document type is "${readableDocType}".
+        You MUST verify that the document in the image is SPECIFICALLY a "${readableDocType}".
+        - If selected is "passport", the image MUST be a Passport. A Citizenship Card, Driving License, or Student ID MUST BE REJECTED with isMatch: false.
+        - If selected is "citizenship", the image MUST be a Citizenship Card/Certificate. A Passport or Driving License MUST BE REJECTED with isMatch: false.
+        - If selected is "driving license", the image MUST be a Driving License. A Passport or Citizenship Card MUST BE REJECTED with isMatch: false.
+        - If selected is "student id", the image MUST be a Student ID card.
+        - If selected is "certificate", the image MUST be an educational/official Certificate.
+        `;
+      }
+
+      const prompt = `
+        You are a strict document, item verification, and tagging assistant for a Lost and Found app.
+        The user claims this item is a "${title}" in category "${category}".
+        ${documentInstruction}
+        
+        Task:
+        1. Verify if the image actually shows a "${title}" belonging to "${category}" AND strictly conforms to specified document type if applicable.
+        2. Provide a concise list of 10-15 single-word tags describing the item (color, brand, material, type, appearance).
+
+        Return ONLY valid JSON in this exact format:
+        {
+          "isMatch": boolean,
+          "reason": "Brief explanation if isMatch is false, otherwise empty string",
+          "tags": ["tag1", "tag2", "tag3"]
+        }
+      `;
+
+      const responseText = await this.generateContentText([prompt, imagePart]);
+      const jsonStr = responseText.match(/\{[\s\S]*\}/)?.[0] || '{"isMatch": true, "tags": []}';
+      const parsed = JSON.parse(jsonStr);
+
+      const isMatch = typeof parsed.isMatch === 'boolean' ? parsed.isMatch : true;
+      const tags = Array.isArray(parsed.tags) && parsed.tags.length > 0
+        ? parsed.tags.map((t: any) => String(t).toLowerCase().trim())
+        : this.simulateAnalysis(title, category);
+
+      console.log(`[VisionService] Combined analysis for "${title}":`, { isMatch, reason: parsed.reason, tagsCount: tags.length });
+      return {
+        isMatch,
+        reason: parsed.reason || '',
+        tags,
+      };
+    } catch (error) {
+      console.error('[VisionService] Combined validation and analysis failed:', error);
+      return { isMatch: true, tags: this.simulateAnalysis(title, category) };
     }
   }
 
